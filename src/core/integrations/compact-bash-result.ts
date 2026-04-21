@@ -126,6 +126,14 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
  * `tool_result_persist`, which drops Promise returns). Requires callers to
  * pass a pre-loaded rule set (see `loadBuiltinRulesSync`). Artifact
  * persistence is not supported here.
+ *
+ * Behavior difference versus the async path: this function compacts against
+ * whatever {@link CompiledRule} array callers pass in. The OpenClaw runtime
+ * uses `loadBuiltinRulesSync()`, which ships the bundled built-in rule set
+ * only. User and project rule overlays (`~/.config/tokenjuice/rules` and
+ * `<cwd>/.tokenjuice/rules`) are not loaded on the sync path because they
+ * require async disk I/O. Hosts that need custom rule overlays should stay
+ * on the async {@link compactBashResult} surface.
  */
 export function compactBashResultSync(
   input: Omit<CompactBashResultInput, "storeRaw">,

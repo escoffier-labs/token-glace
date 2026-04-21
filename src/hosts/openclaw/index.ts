@@ -194,12 +194,17 @@ async function readOpenClawConfig(configPath: string): Promise<{ data: Record<st
     const raw = await readFile(configPath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
     if (!isRecord(parsed)) {
-      return { data: {}, existed: true, raw };
+      throw new Error(
+        `refusing to modify openclaw config at ${configPath}: JSON root is ${Array.isArray(parsed) ? "an array" : typeof parsed}, expected an object`,
+      );
     }
     return { data: parsed, existed: true, raw };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { data: {}, existed: false };
+    }
+    if (error instanceof Error && error.message.startsWith("refusing to modify")) {
+      throw error;
     }
     throw new Error(`failed to read openclaw config at ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -426,7 +431,43 @@ export async function doctorOpenClawExtension(): Promise<OpenClawDoctorReport> {
   const checkedPaths = [expectedEntryPath, expectedManifestPath, expectedPackagePath];
 
   const extensionDirExists = await pathExists(extensionDir);
+  const plugins = isRecord(config.plugins) ? config.plugins : undefined;
+  const allowList = plugins && Array.isArray(plugins.allow) ? plugins.allow as unknown[] : undefined;
+  const entries = plugins && isRecord(plugins.entries) ? plugins.entries : undefined;
+  const loadPaths = plugins && isRecord(plugins.load) && Array.isArray(plugins.load.paths)
+    ? plugins.load.paths as unknown[]
+    : undefined;
+
+  const configStillReferencesPlugin = Boolean(
+    (allowList && allowList.includes(TOKENJUICE_OPENCLAW_PLUGIN_ID))
+    || (entries && TOKENJUICE_OPENCLAW_PLUGIN_ID in entries)
+    || (loadPaths && loadPaths.includes(extensionDir)),
+  );
+
   if (!extensionDirExists) {
+    if (configStillReferencesPlugin) {
+      const staleRefs: string[] = [];
+      if (allowList && allowList.includes(TOKENJUICE_OPENCLAW_PLUGIN_ID)) {
+        staleRefs.push("plugins.allow");
+      }
+      if (entries && TOKENJUICE_OPENCLAW_PLUGIN_ID in entries) {
+        staleRefs.push(`plugins.entries["${TOKENJUICE_OPENCLAW_PLUGIN_ID}"]`);
+      }
+      if (loadPaths && loadPaths.includes(extensionDir)) {
+        staleRefs.push("plugins.load.paths");
+      }
+      return {
+        extensionDir,
+        configPath,
+        status: "warn",
+        issues: [
+          `tokenjuice openclaw extension files are missing but ${configPath} still references the plugin in ${staleRefs.join(", ")}; rerun ${TOKENJUICE_OPENCLAW_FIX_COMMAND} to repair, or tokenjuice uninstall openclaw to fully remove`,
+        ],
+        fixCommand: TOKENJUICE_OPENCLAW_FIX_COMMAND,
+        checkedPaths: [],
+        missingPaths: [],
+      };
+    }
     return {
       extensionDir,
       configPath,
@@ -465,9 +506,6 @@ export async function doctorOpenClawExtension(): Promise<OpenClawDoctorReport> {
     issues.push("installed openclaw extension is missing the tokenjuice generator banner");
   }
 
-  const plugins = isRecord(config.plugins) ? config.plugins : undefined;
-  const allowList = plugins && Array.isArray(plugins.allow) ? plugins.allow as unknown[] : undefined;
-  const entries = plugins && isRecord(plugins.entries) ? plugins.entries : undefined;
   const entry = entries && isRecord(entries[TOKENJUICE_OPENCLAW_PLUGIN_ID])
     ? entries[TOKENJUICE_OPENCLAW_PLUGIN_ID] as Record<string, unknown>
     : undefined;
@@ -487,9 +525,6 @@ export async function doctorOpenClawExtension(): Promise<OpenClawDoctorReport> {
     );
   }
 
-  const loadPaths = plugins && isRecord(plugins.load) && Array.isArray(plugins.load.paths)
-    ? plugins.load.paths as unknown[]
-    : undefined;
   if (loadPaths && !loadPaths.includes(extensionDir)) {
     issues.push(
       `${configPath} has plugins.load.paths that does not reference ${extensionDir}; rerun the installer to register the load path`,

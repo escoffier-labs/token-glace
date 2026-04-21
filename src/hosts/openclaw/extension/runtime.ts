@@ -1,6 +1,6 @@
 import { compactBashResultSync } from "../../../core/integrations/compact-bash-result.js";
 import { loadBuiltinRulesSync } from "../../../core/rules.js";
-import { isNodeExecutablePath, parseShellWords } from "../../shared/hook-command.js";
+import { isNodeExecutablePath, isTokenjuiceExecutablePath, parseShellWords } from "../../shared/hook-command.js";
 
 import type {
   OpenClawAfterToolCallEvent,
@@ -86,7 +86,7 @@ export function commandRequestsTokenjuiceRawBypass(command: string): boolean {
   const first = argv[0];
   const second = argv[1];
   let wrapIndex = -1;
-  if (first === "tokenjuice") {
+  if (typeof first === "string" && isTokenjuiceExecutablePath(first)) {
     wrapIndex = 1;
   } else if (
     typeof first === "string"
@@ -113,8 +113,9 @@ function buildCompactionNotice(rawChars: number, reducedChars: number, reducerId
   return `tokenjuice compacted bash output (${reducer}): ${rawChars} → ${reducedChars} chars (saved ${saved})`;
 }
 
-function replaceFirstTextBlock(
+function replaceTextBlockAt(
   message: OpenClawToolResultMessage,
+  targetIndex: number,
   replacementText: string,
 ): OpenClawToolResultMessage {
   if (!Array.isArray(message.content)) {
@@ -122,7 +123,7 @@ function replaceFirstTextBlock(
   }
   const content = message.content as OpenClawToolResultContentBlock[];
   const nextContent = content.map((block, index) => {
-    if (index !== 0 || !isRecord(block)) {
+    if (index !== targetIndex || !isRecord(block)) {
       return block;
     }
     if (typeof (block as OpenClawToolResultContentBlock).text !== "string") {
@@ -281,7 +282,7 @@ export function createTokenjuiceOpenClawExtension(config: OpenClawExtensionRunti
           reducer,
         )}]`;
 
-        const nextMessage = replaceFirstTextBlock(message, replacementText);
+        const nextMessage = replaceTextBlockAt(message, textBlock.index, replacementText);
         if (nextMessage === message) {
           return undefined;
         }

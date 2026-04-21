@@ -5,11 +5,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  doctorInstalledHooks,
   doctorOpenClawExtension,
   installOpenClawExtension,
   uninstallOpenClawExtension,
 } from "../../src/index.js";
-import { createTokenjuiceOpenClawExtension } from "../../src/hosts/openclaw/extension/runtime.js";
+import {
+  commandRequestsTokenjuiceRawBypass,
+  createTokenjuiceOpenClawExtension,
+} from "../../src/hosts/openclaw/extension/runtime.js";
 
 type FakePluginApi = {
   pluginConfig: Record<string, unknown>;
@@ -278,6 +282,36 @@ describe("installOpenClawExtension", () => {
     expect(report.missingPaths).toContain(join(extensionDirFor(workspaceDir), "package.json"));
   });
 
+  it("reports warn (not disabled) when the extension dir is gone but config still references it", async () => {
+    const { configPath, workspaceDir } = await createFakeHome();
+    await writeConfig(configPath, {
+      agents: { defaults: { workspace: workspaceDir } },
+    });
+    await installOpenClawExtension({ local: true });
+
+    // user nukes the extension dir manually without running uninstall
+    await rm(extensionDirFor(workspaceDir), { recursive: true, force: true });
+
+    const report = await doctorOpenClawExtension();
+    expect(report.status).toBe("warn");
+    expect(report.issues.join("\n")).toMatch(/still references the plugin in/u);
+  });
+
+  it("rejects openclaw.json roots that are not objects", async () => {
+    const { configPath } = await createFakeHome();
+    await writeFile(configPath, JSON.stringify(["not", "an", "object"]), "utf8");
+
+    await expect(installOpenClawExtension({ local: true })).rejects.toThrow(
+      /refusing to modify openclaw config/u,
+    );
+    await expect(uninstallOpenClawExtension()).rejects.toThrow(
+      /refusing to modify openclaw config/u,
+    );
+    await expect(doctorOpenClawExtension()).rejects.toThrow(
+      /refusing to modify openclaw config/u,
+    );
+  });
+
   it("reports warn when allowlist excludes tokenjuice-openclaw", async () => {
     const { configPath, workspaceDir } = await createFakeHome();
     await writeConfig(configPath, {
@@ -325,6 +359,47 @@ describe("uninstallOpenClawExtension", () => {
     expect((plugins.load as Record<string, unknown>).paths).toEqual(["/other"]);
     expect("tokenjuice-openclaw" in (plugins.entries as Record<string, unknown>)).toBe(false);
     expect((plugins.entries as Record<string, unknown>).discord).toEqual({ enabled: true });
+  });
+});
+
+describe("doctorInstalledHooks aggregate", () => {
+  it("includes openclaw in the integrations report and propagates its status", async () => {
+    const { configPath, workspaceDir } = await createFakeHome();
+    // an ok install for openclaw; the other hosts are disabled because HOME points
+    // at a fresh temp dir without any of their config files.
+    await writeConfig(configPath, {
+      agents: { defaults: { workspace: workspaceDir } },
+    });
+    await installOpenClawExtension({ local: true });
+
+    const report = await doctorInstalledHooks();
+
+    expect(Object.keys(report.integrations)).toContain("openclaw");
+    expect(report.integrations.openclaw.status).toBe("ok");
+    // the aggregate status should still be "ok" or "warn" (disabled/ok from other hosts)
+    expect(["ok", "warn"]).toContain(report.status);
+  });
+});
+
+describe("commandRequestsTokenjuiceRawBypass", () => {
+  it("detects bare tokenjuice wrap --raw", () => {
+    expect(commandRequestsTokenjuiceRawBypass("tokenjuice wrap --raw -- git status")).toBe(true);
+    expect(commandRequestsTokenjuiceRawBypass("tokenjuice wrap --full -- git status")).toBe(true);
+  });
+
+  it("detects absolute-path tokenjuice invocations", () => {
+    expect(commandRequestsTokenjuiceRawBypass("/usr/local/bin/tokenjuice wrap --raw -- git status")).toBe(true);
+    expect(commandRequestsTokenjuiceRawBypass("/opt/homebrew/bin/tokenjuice wrap --full -- pnpm test")).toBe(true);
+  });
+
+  it("detects node-launched tokenjuice", () => {
+    expect(commandRequestsTokenjuiceRawBypass("/usr/bin/node /path/to/tokenjuice/dist/cli/main.js wrap --raw -- git status")).toBe(true);
+  });
+
+  it("does not fire on non-tokenjuice commands", () => {
+    expect(commandRequestsTokenjuiceRawBypass("git status")).toBe(false);
+    expect(commandRequestsTokenjuiceRawBypass("tokenjuice reduce --raw")).toBe(false);
+    expect(commandRequestsTokenjuiceRawBypass("my-tokenjuice-wrapper wrap --raw -- git status")).toBe(false);
   });
 });
 
@@ -480,6 +555,44 @@ describe("tokenjuice-openclaw runtime hook", () => {
     const result = persist({ toolName: "exec", toolCallId: "call_keep_1", message }, {});
 
     expect(result).toBeUndefined();
+  });
+
+  it("rewrites the correct text block when content[0] is not the text block", () => {
+    const api = createFakePluginApi();
+    createTokenjuiceOpenClawExtension()(api);
+
+    const before = api.handlers.get("before_tool_call")!;
+    const persist = api.handlers.get("tool_result_persist")!;
+
+    before({ toolName: "exec", params: { command: "git status" }, toolCallId: "call_mixed_1" }, {});
+
+    const statusText = [
+      "On branch main",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/hosts/openclaw/index.ts",
+    ].join("\n");
+    const message = {
+      role: "toolResult",
+      toolName: "exec",
+      toolCallId: "call_mixed_1",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "IGNORED" } },
+        { type: "text", text: statusText },
+      ],
+      details: {},
+    };
+
+    const result = persist({ toolName: "exec", toolCallId: "call_mixed_1", message }, {}) as {
+      message: { content: Array<Record<string, unknown>> };
+    };
+
+    expect(result).toBeDefined();
+    // leading image block is preserved untouched
+    expect((result.message.content[0] as Record<string, unknown>).type).toBe("image");
+    const textBlock = result.message.content[1] as { text: string };
+    expect(textBlock.text).toContain("M: src/hosts/openclaw/index.ts");
+    expect(textBlock.text).toContain("tokenjuice compacted bash output");
   });
 
   it("honors custom toolName configuration", () => {
