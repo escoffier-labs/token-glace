@@ -206,8 +206,27 @@ export async function loadBuiltinRules(): Promise<CompiledRule[]> {
   });
 }
 
+/**
+ * Synchronously compile the bundled built-in rules without touching disk. Use
+ * this in hot paths that are required to be synchronous (for example OpenClaw's
+ * `tool_result_persist` hook, which ignores Promise returns). User and project
+ * rule overlays require async disk I/O and are not available here.
+ */
+const builtinSyncCache: { value: CompiledRule[] | null } = { value: null };
+
+export function loadBuiltinRulesSync(): CompiledRule[] {
+  if (builtinSyncCache.value) {
+    return builtinSyncCache.value;
+  }
+  const descriptors = loadBundledBuiltinRuleDescriptors();
+  const compiled = overlayRules(descriptors);
+  builtinSyncCache.value = compiled;
+  return compiled;
+}
+
 export function clearRuleCache(): void {
   ruleCache.clear();
+  builtinSyncCache.value = null;
 }
 
 async function verifyRuleRoot(root: string, source: RuleOrigin): Promise<RuleVerificationResult[]> {

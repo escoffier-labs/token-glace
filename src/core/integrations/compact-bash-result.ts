@@ -1,12 +1,12 @@
 import { getInspectionCommandSkipReason, getSafeRepositoryInventorySourceArgv } from "../inventory-safety.js";
-import { reduceExecution } from "../reduce.js";
+import { reduceExecution, reduceExecutionWithRulesSync } from "../reduce.js";
 import { getCompactionSkipReason, type RewritePolicyOptions } from "./rewrite-policy.js";
 
-import type { CompactResult, ReduceOptions, ToolExecutionInput } from "../../types.js";
+import type { CompactResult, CompiledRule, ReduceOptions, ToolExecutionInput } from "../../types.js";
 import type { InspectionCommandPolicy, InspectionCommandSkipReason } from "../inventory-safety.js";
 
 export type CompactBashResultInput = {
-  source: "claude-code" | "codex" | "pi";
+  source: "claude-code" | "codex" | "pi" | "openclaw";
   command: string;
   cwd?: string;
   visibleText: string;
@@ -101,6 +101,83 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
   };
 
   const result = await reduceExecution(executionInput, options);
+  const skipReason = getCompactionSkipReason(command, rawText, result, input);
+  if (skipReason) {
+    return {
+      action: "keep",
+      reason: skipReason,
+      rawText,
+      usedTrustedFullText,
+      result,
+    };
+  }
+
+  return {
+    action: "rewrite",
+    rawText,
+    usedTrustedFullText,
+    result,
+  };
+}
+
+/**
+ * Synchronous variant of {@link compactBashResult}. Targets hosts whose
+ * tool-result substitution hook is synchronous (for example OpenClaw's
+ * `tool_result_persist`, which drops Promise returns). Requires callers to
+ * pass a pre-loaded rule set (see `loadBuiltinRulesSync`). Artifact
+ * persistence is not supported here.
+ */
+export function compactBashResultSync(
+  input: Omit<CompactBashResultInput, "storeRaw">,
+  rules: CompiledRule[],
+): CompactBashResultOutput {
+  const command = input.command.trim();
+  if (!command) {
+    return {
+      action: "keep",
+      reason: "unsupported",
+      rawText: "",
+      usedTrustedFullText: false,
+    };
+  }
+
+  const rawText = input.trustedFullText ?? input.visibleText;
+  const usedTrustedFullText = typeof input.trustedFullText === "string";
+  if (!rawText.trim()) {
+    return {
+      action: "keep",
+      reason: "empty-output",
+      rawText,
+      usedTrustedFullText,
+    };
+  }
+
+  const inspectionSkipReason = getInspectionCommandSkipReason(command, resolveInspectionPolicy(input));
+  if (inspectionSkipReason) {
+    return {
+      action: "keep",
+      reason: inspectionSkipReason,
+      rawText,
+      usedTrustedFullText,
+    };
+  }
+
+  const safeInventoryArgv = getSafeRepositoryInventorySourceArgv(command);
+  const executionInput: ToolExecutionInput = {
+    toolName: "exec",
+    command,
+    combinedText: rawText,
+    ...(safeInventoryArgv ? { argv: safeInventoryArgv } : {}),
+    ...(typeof input.cwd === "string" && input.cwd.trim() ? { cwd: input.cwd } : {}),
+    ...(typeof input.exitCode === "number" ? { exitCode: input.exitCode } : {}),
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  };
+  const options: Omit<ReduceOptions, "store" | "recordStats" | "storeDir"> = {
+    ...(typeof input.cwd === "string" && input.cwd.trim() ? { cwd: input.cwd } : {}),
+    ...(typeof input.maxInlineChars === "number" ? { maxInlineChars: input.maxInlineChars } : {}),
+  };
+
+  const result = reduceExecutionWithRulesSync(executionInput, rules, options);
   const skipReason = getCompactionSkipReason(command, rawText, result, input);
   if (skipReason) {
     return {

@@ -36,7 +36,7 @@ then:
 ```bash
 tokenjuice --help
 tokenjuice --version
-tokenjuice install [codex|claude-code|cursor|pi]
+tokenjuice install [codex|claude-code|cursor|pi|openclaw]
 tokenjuice uninstall codex
 ```
 
@@ -65,9 +65,10 @@ tokenjuice reduce-json [file]
 tokenjuice wrap -- <command> [args...]
 tokenjuice wrap --raw -- <command> [args...]
 tokenjuice wrap --store -- <command> [args...]
-tokenjuice install [codex|claude-code|cursor|pi]
-tokenjuice install [codex|claude-code|cursor|pi] --local
+tokenjuice install [codex|claude-code|cursor|pi|openclaw]
+tokenjuice install [codex|claude-code|cursor|pi|openclaw] --local
 tokenjuice uninstall codex
+tokenjuice uninstall openclaw
 tokenjuice ls
 tokenjuice cat <artifact-id>
 tokenjuice verify
@@ -75,6 +76,7 @@ tokenjuice discover
 tokenjuice doctor
 tokenjuice doctor hooks
 tokenjuice doctor pi
+tokenjuice doctor openclaw
 tokenjuice stats
 tokenjuice stats --timezone utc
 ```
@@ -89,6 +91,7 @@ tokenjuice can install host integrations for:
 | <img width="48px" src="docs/client-openai.jpg" alt="Codex" /> | [Codex CLI](https://github.com/openai/codex) | `tokenjuice install codex` | `~/.codex/hooks.json` | ✅ Yes |
 | <img width="48px" src="docs/client-cursor.jpg" alt="Cursor" /> | [Cursor](https://cursor.com/docs/hooks) | `tokenjuice install cursor` | `~/.cursor/hooks.json` | ✅ Yes |
 | <img width="48px" src="docs/client-pi.png" alt="pi" /> | [pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) | `tokenjuice install pi` | `~/.pi/agent/extensions/tokenjuice.js` | ✅ Yes |
+| OpenClaw | [OpenClaw](https://openclaw.ai) | `tokenjuice install openclaw` | `~/.openclaw/workspace/.openclaw/extensions/tokenjuice-openclaw/` + merged entries in `~/.openclaw/openclaw.json` | ✅ Yes |
 
 shared behavior:
 
@@ -121,7 +124,7 @@ if the hook itself goes stale after a package upgrade, repair it with:
 ```bash
 tokenjuice doctor hooks
 tokenjuice doctor pi
-tokenjuice install [codex|claude-code|cursor|pi]
+tokenjuice install [codex|claude-code|cursor|pi|openclaw]
 ```
 
 for machine callers, set:

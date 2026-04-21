@@ -710,6 +710,88 @@ export async function reduceExecutionWithRules(
   };
 }
 
+/**
+ * Synchronous variant of {@link reduceExecutionWithRules}. Suitable for hot
+ * paths that cannot await Promises (for example OpenClaw's
+ * `tool_result_persist` hook, which is documented as synchronous and drops
+ * Promise returns). Artifact persistence (store / recordStats) is not
+ * supported here because those code paths require async I/O. Callers that
+ * need artifact persistence should use the async {@link reduceExecutionWithRules}.
+ */
+export function reduceExecutionWithRulesSync(
+  input: ToolExecutionInput,
+  rules: CompiledRule[],
+  opts: Omit<ReduceOptions, "store" | "recordStats" | "storeDir"> = {},
+): CompactResult {
+  const normalizedInput = normalizeExecutionInput(input);
+  const rawText = buildRawText(normalizedInput);
+  const measuredRawChars = countTextChars(stripAnsi(rawText));
+  const classification = classifyExecution(normalizedInput, rules, opts.classifier);
+  const trace = opts.trace
+    ? {
+        ...(normalizedInput.command ? { normalizedCommand: normalizedInput.command } : {}),
+        ...(normalizedInput.argv?.length ? { normalizedArgv: normalizedInput.argv } : {}),
+        ...(classification.matchedReducer ? { matchedReducer: classification.matchedReducer } : {}),
+        family: classification.family,
+      }
+    : undefined;
+
+  if (opts.raw) {
+    return {
+      inlineText: rawText,
+      ...(trace ? { trace } : {}),
+      stats: {
+        rawChars: measuredRawChars,
+        reducedChars: measuredRawChars,
+        ratio: 1,
+      },
+      classification,
+    };
+  }
+
+  if (classification.matchedReducer === "generic/fallback" && isFileContentInspectionCommand(normalizedInput)) {
+    return {
+      inlineText: rawText,
+      ...(trace ? { trace } : {}),
+      stats: {
+        rawChars: measuredRawChars,
+        reducedChars: measuredRawChars,
+        ratio: 1,
+      },
+      classification,
+    };
+  }
+
+  const matchedRule = rules.find((rule) => rule.rule.id === classification.matchedReducer)
+    ?? rules.find((rule) => rule.rule.id === "generic/fallback");
+
+  if (!matchedRule) {
+    throw new Error("missing generic fallback rule");
+  }
+
+  const { summary, facts } = applyRule(matchedRule, normalizedInput, rawText);
+  const compactText = formatInline(classification, normalizedInput, summary || "(no output)", facts);
+  const maxInlineChars = opts.maxInlineChars ?? 1200;
+  const selectedText = selectInlineText(classification, normalizedInput, rawText, compactText, maxInlineChars);
+  const clamp = classification.family === "help" || selectedText.includes("\n") ? clampTextMiddle : clampText;
+  const inlineText = clamp(selectedText, maxInlineChars);
+  const reducedChars = countTextChars(inlineText);
+  const stats = {
+    rawChars: measuredRawChars,
+    reducedChars,
+    ratio: measuredRawChars === 0 ? 1 : reducedChars / measuredRawChars,
+  };
+
+  return {
+    inlineText,
+    ...(summary ? { previewText: summary } : {}),
+    ...(Object.keys(facts).length > 0 ? { facts } : {}),
+    ...(trace ? { trace } : {}),
+    stats,
+    classification,
+  };
+}
+
 export async function classifyOnly(input: ToolExecutionInput, forcedRuleId?: string) {
   const rules = await loadRules();
   return classifyExecution(normalizeExecutionInput(input), rules, forcedRuleId);

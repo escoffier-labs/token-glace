@@ -1,11 +1,13 @@
 import { doctorClaudeCodeHook } from "../claude-code/index.js";
 import { doctorCodexHook } from "../codex/index.js";
 import { doctorCursorHook } from "../cursor/index.js";
+import { doctorOpenClawExtension } from "../openclaw/index.js";
 import { doctorPiExtension } from "../pi/index.js";
 
 import type { ClaudeCodeDoctorReport, ClaudeCodeHookCommandOptions } from "../claude-code/index.js";
 import type { CodexDoctorReport, CodexHookCommandOptions } from "../codex/index.js";
 import type { CursorDoctorReport } from "../cursor/index.js";
+import type { OpenClawDoctorReport } from "../openclaw/index.js";
 import type { PiDoctorReport } from "../pi/index.js";
 
 type HookHealthStatus = "ok" | "warn" | "broken" | "disabled";
@@ -15,6 +17,7 @@ export type HookIntegrationDoctorReport = {
   "claude-code": ClaudeCodeDoctorReport;
   cursor: CursorDoctorReport;
   pi: PiDoctorReport;
+  openclaw: OpenClawDoctorReport;
 };
 
 export type HookDoctorReport = {
@@ -50,14 +53,19 @@ export async function doctorInstalledHooks(options: HookDoctorCommandOptions = {
   const claudeCode = await doctorClaudeCodeHook(undefined, hookCommandOptions);
   const cursor = await doctorCursorHook(undefined, hookCommandOptions);
   const pi = await doctorPiExtension();
+  const openclaw = await doctorOpenClawExtension();
 
   return {
-    status: mergeStatus(mergeStatus(mergeStatus(codex.status, claudeCode.status), cursor.status), pi.status),
+    status: mergeStatus(
+      mergeStatus(mergeStatus(mergeStatus(codex.status, claudeCode.status), cursor.status), pi.status),
+      openclaw.status,
+    ),
     integrations: {
       codex,
       "claude-code": claudeCode,
       cursor,
       pi,
+      openclaw,
     },
   };
 }
