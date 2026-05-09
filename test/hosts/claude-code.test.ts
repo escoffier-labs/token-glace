@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { doctorClaudeCodeHook, doctorInstalledHooks, installClaudeCodeHook, installCodeBuddyHook, installCodexHook, installCursorHook, installPiExtension, runClaudeCodePostToolUseHook } from "../../src/index.js";
+import { doctorClaudeCodeHook, doctorInstalledHooks, installClaudeCodeHook, installCodeBuddyHook, installCodexHook, installCursorHook, installPiExtension, runClaudeCodePostToolUseHook, runClaudeCodePreToolUseHook } from "../../src/index.js";
 import { getInstalledHookIntegrations } from "../../src/hosts/shared/hook-doctor.js";
 
 const tempDirs: string[] = [];
@@ -924,5 +924,87 @@ describe("claude code config directory discovery", () => {
     const report = await doctorClaudeCodeHook();
 
     expect(report.settingsPath).toBe(join(configDir, "settings.json"));
+  });
+});
+
+describe("runClaudeCodePreToolUseHook", () => {
+  it("rewrites a Bash command into a tokenjuice-wrapped invocation", async () => {
+    const payload = JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "find /etc -maxdepth 2 -type f" },
+    });
+
+    const { code, output } = await captureStdout(() =>
+      runClaudeCodePreToolUseHook(payload, "/usr/local/bin/tokenjuice"),
+    );
+
+    expect(code).toBe(0);
+    const response = JSON.parse(output) as {
+      hookSpecificOutput: {
+        hookEventName: string;
+        permissionDecision: string;
+        updatedInput: { command: string };
+      };
+    };
+    expect(response.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+    expect(response.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(response.hookSpecificOutput.updatedInput.command).toContain("tokenjuice");
+    expect(response.hookSpecificOutput.updatedInput.command).toContain(" wrap ");
+    expect(response.hookSpecificOutput.updatedInput.command).toContain("find /etc -maxdepth 2 -type f");
+  });
+
+  it("no-ops on non-Bash tool names", async () => {
+    const payload = JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "/etc/hostname" },
+    });
+
+    const { code, output } = await captureStdout(() =>
+      runClaudeCodePreToolUseHook(payload, "/usr/local/bin/tokenjuice"),
+    );
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
+  });
+
+  it("no-ops on already-wrapped commands to prevent double-wrap", async () => {
+    const payload = JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "tokenjuice wrap -- bash -lc 'ls /tmp'" },
+    });
+
+    const { code, output } = await captureStdout(() =>
+      runClaudeCodePreToolUseHook(payload, "/usr/local/bin/tokenjuice"),
+    );
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
+  });
+
+  it("no-ops on non-PreToolUse events", async () => {
+    const payload = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+    });
+
+    const { code, output } = await captureStdout(() =>
+      runClaudeCodePreToolUseHook(payload, "/usr/local/bin/tokenjuice"),
+    );
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
+  });
+
+  it("no-ops on malformed JSON instead of crashing", async () => {
+    const { code, output } = await captureStdout(() =>
+      runClaudeCodePreToolUseHook("{not valid json", "/usr/local/bin/tokenjuice"),
+    );
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
   });
 });

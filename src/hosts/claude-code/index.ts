@@ -7,6 +7,11 @@ import { stripLeadingCdPrefix } from "../../core/command.js";
 import { compactBashResult } from "../../core/integrations/compact-bash-result.js";
 import { extractHookCommandPaths, isNodeExecutablePath, parseShellWords, shellQuote } from "../shared/hook-command.js";
 import { buildCompactionHint } from "../shared/hook-output.js";
+import {
+  buildWrappedCommand,
+  commandAlreadyWrapped,
+  resolveHostShell,
+} from "../shared/pre-tool-wrap.js";
 
 type ClaudeCodeHook = Record<string, unknown>;
 
@@ -499,4 +504,71 @@ export async function runClaudeCodePostToolUseHook(rawText: string): Promise<num
     });
     return 0;
   }
+}
+
+type ClaudeCodePreToolUsePayload = {
+  hook_event_name?: unknown;
+  tool_name?: unknown;
+  tool_input?: unknown;
+};
+
+type ClaudeCodeBashToolInput = {
+  command?: unknown;
+  description?: unknown;
+  run_in_background?: unknown;
+  timeout?: unknown;
+} & Record<string, unknown>;
+
+async function resolveClaudeCodeHostShell(): Promise<string | undefined> {
+  return resolveHostShell([
+    process.env.TOKENJUICE_CLAUDE_CODE_SHELL,
+    process.env.SHELL,
+    "bash",
+    "sh",
+  ]);
+}
+
+export async function runClaudeCodePreToolUseHook(rawText: string, wrapLauncher = "tokenjuice"): Promise<number> {
+  let payload: ClaudeCodePreToolUsePayload;
+  try {
+    payload = JSON.parse(rawText) as ClaudeCodePreToolUsePayload;
+  } catch {
+    return 0;
+  }
+
+  if (payload.hook_event_name !== "PreToolUse") {
+    return 0;
+  }
+  if (payload.tool_name !== "Bash" || !isRecord(payload.tool_input)) {
+    return 0;
+  }
+
+  const toolInput = payload.tool_input as ClaudeCodeBashToolInput;
+  const command = typeof toolInput.command === "string" ? toolInput.command : undefined;
+  if (!command || !command.trim()) {
+    return 0;
+  }
+  if (commandAlreadyWrapped(command)) {
+    return 0;
+  }
+
+  const shellPath = await resolveClaudeCodeHostShell();
+  if (!shellPath) {
+    return 0;
+  }
+
+  const wrappedCommand = buildWrappedCommand({ wrapLauncher, shellPath, command, source: "claude-code" });
+
+  const response = {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: {
+        ...toolInput,
+        command: wrappedCommand,
+      },
+    },
+  };
+  process.stdout.write(`${JSON.stringify(response)}\n`);
+  return 0;
 }
