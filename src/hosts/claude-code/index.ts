@@ -424,6 +424,13 @@ export async function runClaudeCodePreToolUseHook(rawText: string, wrapLauncher 
 
   const wrappedCommand = buildWrappedCommand({ wrapLauncher, shellPath, command, source: "claude-code" });
 
+  // `permissionDecision: "allow"` matches the wrap-pattern used by the
+  // sibling `codebuddy` and `cursor` hosts in this repo. The user has already
+  // opted into letting tokenjuice transform their bash commands by running
+  // `tokenjuice install claude-code`; the wrapped invocation runs the same
+  // command they asked for, just routed through `tokenjuice wrap` for output
+  // compaction. Returning `"ask"` here would surface a permission prompt on
+  // every Bash call, defeating the transparent compaction contract.
   const response = {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
