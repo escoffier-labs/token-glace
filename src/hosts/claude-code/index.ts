@@ -3,10 +3,7 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
-import { stripLeadingCdPrefix } from "../../core/command.js";
-import { compactBashResult } from "../../core/integrations/compact-bash-result.js";
-import { extractHookCommandPaths, isNodeExecutablePath, parseShellWords } from "../shared/hook-command.js";
-import { buildCompactionHint } from "../shared/hook-output.js";
+import { extractHookCommandPaths } from "../shared/hook-command.js";
 import {
   buildWrapLauncherHookCommand,
   buildWrappedCommand,
@@ -24,19 +21,6 @@ type ClaudeCodeHookMatcherGroup = Record<string, unknown> & {
 type ClaudeCodeSettings = Record<string, unknown> & {
   hooks: Record<string, unknown>;
 };
-
-type ClaudeCodePostToolUsePayload = {
-  hook_event_name?: unknown;
-  tool_name?: unknown;
-  cwd?: unknown;
-  tool_input?: {
-    command?: unknown;
-  };
-  tool_response?: unknown;
-};
-
-const GENERIC_FALLBACK_MIN_SAVED_CHARS = 120;
-const GENERIC_FALLBACK_MAX_RATIO = 0.75;
 
 export type InstallClaudeCodeHookResult = {
   settingsPath: string;
@@ -101,31 +85,6 @@ function getClaudeCodeFixCommand(local = false): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringifyToolResponse(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value
-      .map((entry) => stringifyToolResponse(entry))
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (isRecord(value)) {
-    for (const key of ["output", "text", "stdout", "stderr", "combinedText"]) {
-      const text = value[key];
-      if (typeof text === "string" && text) {
-        return text;
-      }
-    }
-    return JSON.stringify(value);
-  }
-  return String(value);
 }
 
 function createTokenjuiceClaudeCodeHook(command: string): ClaudeCodeHookMatcherGroup {
@@ -395,153 +354,21 @@ export async function doctorClaudeCodeHook(
   };
 }
 
-function readPositiveIntegerEnv(name: string): number | undefined {
-  const value = process.env[name];
-  if (!value) {
-    return undefined;
-  }
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function shouldStoreFromEnv(): boolean {
-  const value = process.env.TOKENJUICE_CLAUDE_CODE_STORE;
-  return value === "1" || value === "true" || value === "TRUE" || value === "yes" || value === "YES";
-}
-
-function commandRequestsTokenjuiceRawBypass(command: string): boolean {
-  const argv = parseShellWords(stripLeadingCdPrefix(command));
-  if (argv.length < 3) {
-    return false;
-  }
-
-  const first = argv[0];
-  const second = argv[1];
-  let wrapIndex = -1;
-  if (first === "tokenjuice") {
-    wrapIndex = 1;
-  } else if (
-    typeof first === "string"
-    && isNodeExecutablePath(first)
-    && typeof second === "string"
-    && second.endsWith(".js")
-    && argv.slice(1).some((part) => part.includes("tokenjuice"))
-  ) {
-    wrapIndex = 2;
-  }
-
-  if (wrapIndex === -1 || argv[wrapIndex] !== "wrap") {
-    return false;
-  }
-
-  const optionEndIndex = argv.indexOf("--", wrapIndex + 1);
-  const optionArgs = argv.slice(wrapIndex + 1, optionEndIndex === -1 ? undefined : optionEndIndex);
-  return optionArgs.includes("--raw") || optionArgs.includes("--full");
-}
-
-function buildClaudeCodeAdditionalContext(inlineText: string, rawRefId?: string): string {
-  return `${inlineText}\n\n${buildCompactionHint(rawRefId)}`;
-}
-
-async function writeHookDebug(record: Record<string, unknown>): Promise<void> {
-  const debugPath = join(getClaudeCodeHome(), "tokenjuice-hook.last.json");
-  await mkdir(dirname(debugPath), { recursive: true });
-  await writeFile(debugPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-}
-
-export async function runClaudeCodePostToolUseHook(rawText: string): Promise<number> {
-  let payload: ClaudeCodePostToolUsePayload;
-  try {
-    payload = JSON.parse(rawText) as ClaudeCodePostToolUsePayload;
-  } catch {
-    return 0;
-  }
-
-  const command = payload.tool_input?.command;
-  const debug: Record<string, unknown> = {
-    hookEvent: payload.hook_event_name,
-    toolName: payload.tool_name,
-    command,
-    rewrote: false,
-  };
-
-  if (payload.hook_event_name !== "PostToolUse") {
-    await writeHookDebug({ ...debug, skipped: "non-post-tool-use" });
-    return 0;
-  }
-  if (payload.tool_name !== "Bash") {
-    await writeHookDebug({ ...debug, skipped: "non-bash" });
-    return 0;
-  }
-  if (typeof command !== "string" || !command.trim()) {
-    await writeHookDebug({ ...debug, skipped: "missing-command" });
-    return 0;
-  }
-
-  const combinedText = stringifyToolResponse(payload.tool_response);
-  if (!combinedText.trim()) {
-    await writeHookDebug({ ...debug, skipped: "empty-tool-response" });
-    return 0;
-  }
-
-  if (commandRequestsTokenjuiceRawBypass(command)) {
-    await writeHookDebug({ ...debug, skipped: "explicit-raw-bypass" });
-    return 0;
-  }
-
-  const maxInlineChars = readPositiveIntegerEnv("TOKENJUICE_CLAUDE_CODE_MAX_INLINE_CHARS");
-
-  try {
-    const outcome = await compactBashResult({
-      source: "claude-code",
-      command,
-      visibleText: combinedText,
-      ...(typeof payload.cwd === "string" && payload.cwd.trim() ? { cwd: payload.cwd } : {}),
-      ...(typeof maxInlineChars === "number" ? { maxInlineChars } : {}),
-      inspectionPolicy: "allow-safe-inventory",
-      storeRaw: shouldStoreFromEnv(),
-      metadata: {
-        source: "claude-code-post-tool-use",
-      },
-      genericFallbackMinSavedChars: GENERIC_FALLBACK_MIN_SAVED_CHARS,
-      genericFallbackMaxRatio: GENERIC_FALLBACK_MAX_RATIO,
-      skipGenericFallbackForCompoundCommands: true,
-    });
-
-    const result = outcome.action === "rewrite" ? outcome.result : outcome.result;
-    if (result) {
-      debug.rawChars = result.stats.rawChars;
-      debug.reducedChars = result.stats.reducedChars;
-      debug.matchedReducer = result.classification.matchedReducer;
-    }
-
-    if (outcome.action === "keep") {
-      await writeHookDebug({ ...debug, skipped: outcome.reason });
-      return 0;
-    }
-
-    const hookOutput: Record<string, unknown> = {
-      suppressOutput: true,
-      hookSpecificOutput: {
-        hookEventName: "PostToolUse",
-        additionalContext: buildClaudeCodeAdditionalContext(
-          outcome.result.inlineText,
-          outcome.result.rawRef?.id,
-        ),
-      },
-    };
-
-    process.stdout.write(`${JSON.stringify(hookOutput)}\n`);
-    await writeHookDebug({ ...debug, rewrote: true });
-    return 0;
-  } catch (error) {
-    await writeHookDebug({
-      ...debug,
-      skipped: "hook-error",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return 0;
-  }
+/**
+ * Deprecation shim. The legacy `claude-code-post-tool-use` hook contract
+ * (additive `hookSpecificOutput.additionalContext`) does not substitute the
+ * underlying `tool_result` on Claude Code, so the unreduced bash output still
+ * reaches the model and the inline hint is appended on top — net additive,
+ * not compacting. The host pivoted to a PreToolUse "wrap" entrypoint in this
+ * version (`runClaudeCodePreToolUseHook`); this shim lets settings.json files
+ * left over from the old install fail soft instead of erroring per Bash call
+ * until the user reruns `tokenjuice install claude-code`.
+ */
+export async function runClaudeCodePostToolUseHook(_rawText: string): Promise<number> {
+  process.stderr.write(
+    "[tokenjuice] claude-code-post-tool-use is deprecated; rerun `tokenjuice install claude-code` to migrate to the PreToolUse hook.\n",
+  );
+  return 0;
 }
 
 type ClaudeCodePreToolUsePayload = {

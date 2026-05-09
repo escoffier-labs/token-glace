@@ -663,267 +663,49 @@ describe("doctorInstalledHooks", () => {
   });
 });
 
-describe("runClaudeCodePostToolUseHook", () => {
-  it("adds compacted bash output as context without a block decision", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
+describe("runClaudeCodePostToolUseHook (legacy shim)", () => {
+  it("returns 0 and writes a deprecation notice to stderr without rewriting output", async () => {
+    const stderrChunks: string[] = [];
+    const originalStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
 
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "git status",
-      },
-      tool_response: [
-        "On branch pr-65478-security-fix",
-        "Your branch and 'origin/pr-65478-security-fix' have diverged,",
-        "and have 8 and 642 different commits each, respectively.",
-        "",
-        "Changes not staged for commit:",
-        "\tmodified:   src/agents/pi-embedded-runner/run/attempt.prompt-helpers.ts",
-        "\tmodified:   src/agents/pi-embedded-runner/run/attempt.test.ts",
-        "",
-        "no changes added to commit",
-      ].join("\n"),
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const response = JSON.parse(output) as {
-      decision?: string;
-      reason?: string;
-      suppressOutput?: boolean;
-      hookSpecificOutput?: { additionalContext?: string };
-    };
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      matchedReducer?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(response).not.toHaveProperty("decision");
-    expect(response).not.toHaveProperty("reason");
-    expect(response.suppressOutput).toBe(true);
-    expect(response.hookSpecificOutput?.additionalContext).toContain("Changes not staged:");
-    expect(response.hookSpecificOutput?.additionalContext).toContain("M: src/agents/pi-embedded-runner/run/attempt.prompt-helpers.ts");
-    expect(response.hookSpecificOutput?.additionalContext).not.toContain("and have 8 and 642");
-    expect(response.hookSpecificOutput?.additionalContext).toContain("need raw?");
-    expect(response.hookSpecificOutput?.additionalContext).toContain("tokenjuice wrap --raw -- <command>");
-    expect(response.hookSpecificOutput?.additionalContext).not.toContain("tokenjuice wrap --full -- <command>");
-    expect(debug.rewrote).toBe(true);
-    expect(debug.matchedReducer).toBe("git/status");
+    try {
+      const { code, output } = await captureStdout(() =>
+        runClaudeCodePostToolUseHook(
+          JSON.stringify({
+            hook_event_name: "PostToolUse",
+            tool_name: "Bash",
+            tool_input: { command: "ls" },
+            tool_response: "x",
+          }),
+        ),
+      );
+      expect(code).toBe(0);
+      expect(output).toBe("");
+      expect(stderrChunks.join("")).toContain("deprecated");
+    } finally {
+      process.stderr.write = originalStderr;
+    }
   });
 
-  it("skips file-content inspection commands", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
+  it("returns 0 even on malformed JSON (no crash on stale settings.json)", async () => {
+    const stderrChunks: string[] = [];
+    const originalStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
 
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "cat src/core/reduce.ts",
-      },
-      tool_response: "export function reduceExecution() {}\n",
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("file-content-inspection-command");
-  });
-
-  it("rewrites safe repository inventory commands", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "rg --files src/rules",
-      },
-      tool_response: Array.from({ length: 30 }, (_, index) => `src/rules/example-${index + 1}.json`).join("\n"),
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const response = JSON.parse(output) as {
-      decision?: string;
-      reason?: string;
-      hookSpecificOutput?: { additionalContext?: string };
-    };
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      matchedReducer?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(response).not.toHaveProperty("decision");
-    expect(response).not.toHaveProperty("reason");
-    expect(response.hookSpecificOutput?.additionalContext).toContain("30 paths");
-    expect(debug.rewrote).toBe(true);
-    expect(debug.matchedReducer).toBe("filesystem/rg-files");
-  });
-
-  it("skips non-PostToolUse events", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "Stop",
-      tool_name: "Bash",
-      tool_input: {
-        command: "git status",
-      },
-      tool_response: "output",
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("non-post-tool-use");
-  });
-
-  it("skips non-Bash tools", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Read",
-      tool_input: {
-        command: "cat README.md",
-      },
-      tool_response: "output",
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("non-bash");
-  });
-
-  it("honors tokenjuice raw bypass commands without re-compacting them", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "tokenjuice wrap --raw -- bash -lc 'git show HEAD --stat'",
-      },
-      tool_response: [
-        "commit abcdef",
-        "Author: Example",
-        "",
-        " README.md | 10 +++++-----",
-        " src/hosts/claude-code/index.ts | 12 +++++++-----",
-      ].join("\n"),
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("explicit-raw-bypass");
-  });
-
-  it("honors tokenjuice raw bypass commands with leading cd prefixes", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "cd /data/code/lighthouse/helper && tokenjuice wrap --raw -- python scripts/query_cls_log.py --limit 500",
-      },
-      tool_response: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"),
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("explicit-raw-bypass");
-  });
-
-  it("honors tokenjuice full bypass commands without re-compacting them", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "tokenjuice wrap --full -- git log --oneline -50",
-      },
-      tool_response: Array.from({ length: 50 }, (_, i) => `${String(i).padStart(7, "0")} commit ${i}`).join("\n"),
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("explicit-raw-bypass");
-  });
-
-  it("skips empty tool_response", async () => {
-    const home = await createTempDir();
-    process.env.CLAUDE_HOME = home;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: {
-        command: "git status",
-      },
-      tool_response: "",
-    });
-
-    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
-      rewrote: boolean;
-      skipped?: string;
-    };
-
-    expect(code).toBe(0);
-    expect(output).toBe("");
-    expect(debug.rewrote).toBe(false);
-    expect(debug.skipped).toBe("empty-tool-response");
+    try {
+      const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook("{not-json"));
+      expect(code).toBe(0);
+      expect(output).toBe("");
+    } finally {
+      process.stderr.write = originalStderr;
+    }
   });
 });
 
@@ -955,26 +737,6 @@ describe("claude code config directory discovery", () => {
     const result = await installClaudeCodeHook();
 
     expect(result.settingsPath).toBe(join(legacyHome, "settings.json"));
-  });
-
-  it("writes hook debug log under CLAUDE_CONFIG_DIR when set", async () => {
-    const configDir = await createTempDir();
-    const legacyHome = await createTempDir();
-    process.env.CLAUDE_CONFIG_DIR = configDir;
-    process.env.CLAUDE_HOME = legacyHome;
-
-    const payload = JSON.stringify({
-      hook_event_name: "PostToolUse",
-      tool_name: "Bash",
-      tool_input: { command: "git status" },
-      tool_response: "",
-    });
-
-    await captureStdout(() => runClaudeCodePostToolUseHook(payload));
-
-    const debugPath = join(configDir, "tokenjuice-hook.last.json");
-    const debug = JSON.parse(await readFile(debugPath, "utf8")) as { skipped?: string };
-    expect(debug.skipped).toBe("empty-tool-response");
   });
 
   it("doctor reads settings.json from CLAUDE_CONFIG_DIR when no path is provided", async () => {
