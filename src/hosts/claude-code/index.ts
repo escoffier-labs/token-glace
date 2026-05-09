@@ -1,13 +1,14 @@
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 import { stripLeadingCdPrefix } from "../../core/command.js";
 import { compactBashResult } from "../../core/integrations/compact-bash-result.js";
-import { extractHookCommandPaths, isNodeExecutablePath, parseShellWords, shellQuote } from "../shared/hook-command.js";
+import { extractHookCommandPaths, isNodeExecutablePath, parseShellWords } from "../shared/hook-command.js";
 import { buildCompactionHint } from "../shared/hook-output.js";
 import {
+  buildWrapLauncherHookCommand,
   buildWrappedCommand,
   commandAlreadyWrapped,
   resolveHostShell,
@@ -60,8 +61,11 @@ export type ClaudeCodeHookCommandOptions = {
   nodePath?: string;
 };
 
-const TOKENJUICE_CLAUDE_CODE_STATUS = "compacting bash output with tokenjuice";
+const TOKENJUICE_CLAUDE_CODE_STATUS = "wrapping bash through tokenjuice for compaction";
+const TOKENJUICE_CLAUDE_CODE_LEGACY_STATUS = "compacting bash output with tokenjuice";
 const TOKENJUICE_CLAUDE_CODE_FIX_COMMAND = "tokenjuice install claude-code";
+const TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND = "claude-code-pre-tool-use";
+const TOKENJUICE_CLAUDE_CODE_LEGACY_HOOK_SUBCOMMAND = "claude-code-post-tool-use";
 
 function getClaudeCodeHome(): string {
   // Claude Code resolves its config directory from CLAUDE_CONFIG_DIR, so honor
@@ -83,52 +87,12 @@ async function isExecutableFile(path: string): Promise<boolean> {
   }
 }
 
-async function resolveInstalledTokenjuicePath(): Promise<string | undefined> {
-  const pathValue = process.env.PATH;
-  if (!pathValue) {
-    return undefined;
-  }
-
-  const candidateNames = process.platform === "win32"
-    ? ["tokenjuice.exe", "tokenjuice.cmd", "tokenjuice.bat", "tokenjuice"]
-    : ["tokenjuice"];
-
-  for (const segment of pathValue.split(delimiter)) {
-    if (!segment) {
-      continue;
-    }
-
-    for (const candidateName of candidateNames) {
-      const candidatePath = join(segment, candidateName);
-      if (await isExecutableFile(candidatePath)) {
-        return candidatePath;
-      }
-    }
-  }
-
-  return undefined;
-}
-
 async function buildClaudeCodeHookCommand(options: ClaudeCodeHookCommandOptions = {}): Promise<string> {
-  const rawBinaryPath = options.binaryPath ?? process.argv[1];
-  const binaryPath = rawBinaryPath && !isAbsolute(rawBinaryPath) ? resolve(rawBinaryPath) : rawBinaryPath;
-  const nodePath = options.nodePath ?? process.execPath;
-  if (!binaryPath) {
-    throw new Error("unable to resolve tokenjuice binary path for claude code install");
-  }
-
-  if (!options.local) {
-    const installedBinaryPath = await resolveInstalledTokenjuicePath();
-    if (installedBinaryPath) {
-      return `${shellQuote(installedBinaryPath)} claude-code-post-tool-use`;
-    }
-  }
-
-  if (binaryPath.endsWith(".js")) {
-    return `${shellQuote(nodePath)} ${shellQuote(binaryPath)} claude-code-post-tool-use`;
-  }
-
-  return `${shellQuote(binaryPath)} claude-code-post-tool-use`;
+  return buildWrapLauncherHookCommand({
+    ...options,
+    subcommand: TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND,
+    hostName: "claude-code",
+  });
 }
 
 function getClaudeCodeFixCommand(local = false): string {
@@ -177,31 +141,44 @@ function createTokenjuiceClaudeCodeHook(command: string): ClaudeCodeHookMatcherG
   };
 }
 
-function isTokenjuiceClaudeCodeHook(group: ClaudeCodeHookMatcherGroup): boolean {
-  return group.hooks.some((hook) =>
-    isRecord(hook) && (
-      hook.statusMessage === TOKENJUICE_CLAUDE_CODE_STATUS
-      || (typeof hook.command === "string" && hook.command.includes("claude-code-post-tool-use"))
-    ),
+function isTokenjuiceClaudeCodeHookEntry(hook: unknown): boolean {
+  if (!isRecord(hook)) {
+    return false;
+  }
+  if (
+    hook.statusMessage === TOKENJUICE_CLAUDE_CODE_STATUS
+    || hook.statusMessage === TOKENJUICE_CLAUDE_CODE_LEGACY_STATUS
+  ) {
+    return true;
+  }
+  if (typeof hook.command !== "string") {
+    return false;
+  }
+  return (
+    hook.command.includes(TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND)
+    || hook.command.includes(TOKENJUICE_CLAUDE_CODE_LEGACY_HOOK_SUBCOMMAND)
   );
 }
 
-function findTokenjuiceClaudeCodeHookCommand(config: ClaudeCodeSettings): string | undefined {
-  const postToolUse = Array.isArray(config.hooks.PostToolUse) ? config.hooks.PostToolUse : [];
-  for (const group of postToolUse) {
-    if (!(isRecord(group) && Array.isArray(group.hooks) && isTokenjuiceClaudeCodeHook(group as ClaudeCodeHookMatcherGroup))) {
-      continue;
-    }
+function isTokenjuiceClaudeCodeHook(group: ClaudeCodeHookMatcherGroup): boolean {
+  return group.hooks.some(isTokenjuiceClaudeCodeHookEntry);
+}
 
-    const command = group.hooks.find((hook) =>
-      isRecord(hook)
-      && (
-        hook.statusMessage === TOKENJUICE_CLAUDE_CODE_STATUS
-        || (typeof hook.command === "string" && hook.command.includes("claude-code-post-tool-use"))
-      ),
-    )?.command;
-    if (typeof command === "string" && command) {
-      return command;
+function findTokenjuiceClaudeCodeHookCommand(
+  config: ClaudeCodeSettings,
+): { command: string; hookEvent: "PreToolUse" | "PostToolUse" } | undefined {
+  // Prefer the current PreToolUse shape; fall back to legacy PostToolUse so
+  // doctor can detect stale installs and report a migration hint.
+  for (const hookEvent of ["PreToolUse", "PostToolUse"] as const) {
+    const groups = Array.isArray(config.hooks[hookEvent]) ? (config.hooks[hookEvent] as unknown[]) : [];
+    for (const group of groups) {
+      if (!(isRecord(group) && Array.isArray(group.hooks) && isTokenjuiceClaudeCodeHook(group as ClaudeCodeHookMatcherGroup))) {
+        continue;
+      }
+      const matched = group.hooks.find(isTokenjuiceClaudeCodeHookEntry);
+      if (isRecord(matched) && typeof matched.command === "string" && matched.command) {
+        return { command: matched.command, hookEvent };
+      }
     }
   }
 
@@ -267,18 +244,59 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Return `groups` with every tokenjuice hook entry removed from each group's
+ * `.hooks[]`. Unrelated hooks are preserved; groups that end up empty are
+ * dropped. This is the surgical counterpart to a simple group-level filter:
+ * dropping a whole group would silently delete any user-authored hook that
+ * happens to share a matcher group with the tokenjuice entry.
+ */
+function pruneTokenjuiceHookEntries(groups: unknown[]): unknown[] {
+  const pruned: unknown[] = [];
+  for (const group of groups) {
+    if (!isRecord(group) || !Array.isArray(group.hooks)) {
+      pruned.push(group);
+      continue;
+    }
+    const retainedHooks = group.hooks.filter((hook) => !isTokenjuiceClaudeCodeHookEntry(hook));
+    if (retainedHooks.length === 0) {
+      continue;
+    }
+    if (retainedHooks.length === group.hooks.length) {
+      pruned.push(group);
+      continue;
+    }
+    pruned.push({ ...group, hooks: retainedHooks });
+  }
+  return pruned;
+}
+
 export async function installClaudeCodeHook(
   settingsPath = getDefaultSettingsPath(),
   options: ClaudeCodeHookCommandOptions = {},
 ): Promise<InstallClaudeCodeHookResult> {
   const { config, backupPath } = await loadClaudeCodeSettings(settingsPath);
   const command = await buildClaudeCodeHookCommand(options);
-  const postToolUse = Array.isArray(config.hooks.PostToolUse) ? config.hooks.PostToolUse : [];
-  const retained = postToolUse.filter((group) =>
-    !(isRecord(group) && Array.isArray(group.hooks) && isTokenjuiceClaudeCodeHook(group as ClaudeCodeHookMatcherGroup)),
-  );
+
+  // Drop any legacy PostToolUse tokenjuice entries left behind by a prior
+  // version of this host, but preserve unrelated hooks that happen to live in
+  // the same matcher group. This is the silent migration path: rerunning
+  // `tokenjuice install claude-code` after the PreToolUse pivot leaves the
+  // user with the new hook and zero legacy entries, no separate uninstall
+  // step required.
+  if (Array.isArray(config.hooks.PostToolUse)) {
+    const prunedPost = pruneTokenjuiceHookEntries(config.hooks.PostToolUse);
+    if (prunedPost.length === 0) {
+      delete config.hooks.PostToolUse;
+    } else {
+      config.hooks.PostToolUse = prunedPost;
+    }
+  }
+
+  const preToolUse = Array.isArray(config.hooks.PreToolUse) ? config.hooks.PreToolUse : [];
+  const retained = pruneTokenjuiceHookEntries(preToolUse);
   retained.push(createTokenjuiceClaudeCodeHook(command));
-  config.hooks.PostToolUse = retained;
+  config.hooks.PreToolUse = retained;
 
   await mkdir(dirname(settingsPath), { recursive: true });
   const tempPath = `${settingsPath}.tmp`;
@@ -299,7 +317,7 @@ export async function doctorClaudeCodeHook(
   const expectedCommand = await buildClaudeCodeHookCommand(options);
   const fixCommand = getClaudeCodeFixCommand(options.local);
   const { config, exists } = await readClaudeCodeSettings(settingsPath);
-  const detectedCommand = findTokenjuiceClaudeCodeHookCommand(config);
+  const detected = findTokenjuiceClaudeCodeHookCommand(config);
 
   if (!exists) {
     return {
@@ -313,11 +331,11 @@ export async function doctorClaudeCodeHook(
     };
   }
 
-  if (!detectedCommand) {
+  if (!detected) {
     return {
       settingsPath,
       status: "warn",
-      issues: ["tokenjuice PostToolUse hook is not installed for Claude Code"],
+      issues: ["tokenjuice PreToolUse hook is not installed for Claude Code"],
       fixCommand,
       expectedCommand,
       checkedPaths: [],
@@ -325,6 +343,26 @@ export async function doctorClaudeCodeHook(
     };
   }
 
+  // A legacy PostToolUse tokenjuice entry — wrong contract on Claude Code,
+  // additive context only, not a token reduction. Surface as a warn with a
+  // migration hint so users notice on the next `tokenjuice doctor` run.
+  if (detected.hookEvent === "PostToolUse") {
+    const legacyChecked = extractHookCommandPaths(detected.command);
+    return {
+      settingsPath,
+      status: "warn",
+      issues: [
+        "legacy PostToolUse tokenjuice hook detected; rerun `tokenjuice install claude-code` to migrate to PreToolUse",
+      ],
+      fixCommand,
+      expectedCommand,
+      detectedCommand: detected.command,
+      checkedPaths: legacyChecked,
+      missingPaths: [],
+    };
+  }
+
+  const detectedCommand = detected.command;
   const checkedPaths = extractHookCommandPaths(detectedCommand);
   const missingPaths: string[] = [];
   for (const path of checkedPaths) {
