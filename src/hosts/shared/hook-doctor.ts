@@ -18,6 +18,7 @@ import { doctorJunieInstructions } from "../junie/index.js";
 import { doctorKiroSteering } from "../kiro/index.js";
 import { doctorKiloRule } from "../kilo/index.js";
 import { doctorOpenHandsHook } from "../openhands/index.js";
+import { doctorOpenWebUITool } from "../openwebui/index.js";
 import { doctorPiExtension } from "../pi/index.js";
 import { doctorQwenCodeHook } from "../qwen-code/index.js";
 import { doctorRooInstructions } from "../roo/index.js";
@@ -46,6 +47,7 @@ import type { JunieDoctorReport } from "../junie/index.js";
 import type { KiroDoctorReport } from "../kiro/index.js";
 import type { KiloDoctorReport } from "../kilo/index.js";
 import type { OpenHandsDoctorReport } from "../openhands/index.js";
+import type { OpenWebUIDoctorReport, OpenWebUIToolOptions } from "../openwebui/index.js";
 import type { PiDoctorReport } from "../pi/index.js";
 import type { QwenCodeDoctorReport, QwenCodeHookCommandOptions } from "../qwen-code/index.js";
 import type { RooDoctorReport } from "../roo/index.js";
@@ -76,6 +78,7 @@ export type HookIntegrationDoctorReport = {
   kiro: KiroDoctorReport;
   kilo: KiloDoctorReport;
   openhands: OpenHandsDoctorReport;
+  openwebui: OpenWebUIDoctorReport;
   pi: PiDoctorReport;
   "qwen-code": QwenCodeDoctorReport;
   roo: RooDoctorReport;
@@ -91,7 +94,7 @@ export type HookDoctorReport = {
   integrations: HookIntegrationDoctorReport;
 };
 
-export type HookDoctorCommandOptions = AmpInstructionsOptions & CodexHookCommandOptions & ClaudeCodeHookCommandOptions & CodeBuddyHookCommandOptions & CopilotAgentHookCommandOptions & CrushSkillOptions & DroidHookCommandOptions & GooseHintsOptions & GrokCliHookCommandOptions & QwenCodeHookCommandOptions & RulerRuleOptions;
+export type HookDoctorCommandOptions = AmpInstructionsOptions & CodexHookCommandOptions & ClaudeCodeHookCommandOptions & CodeBuddyHookCommandOptions & CopilotAgentHookCommandOptions & CrushSkillOptions & DroidHookCommandOptions & GooseHintsOptions & GrokCliHookCommandOptions & OpenWebUIToolOptions & QwenCodeHookCommandOptions & RulerRuleOptions;
 export type HookIntegrationDoctorEntry = [
   keyof HookIntegrationDoctorReport,
   HookIntegrationDoctorReport[keyof HookIntegrationDoctorReport],
@@ -122,6 +125,7 @@ const hookDoctorIntegrationDoctors = {
   kiro: () => doctorKiroSteering(),
   kilo: () => doctorKiloRule(),
   openhands: (options) => doctorOpenHandsHook(undefined, getHookCommandOptions(options)),
+  openwebui: (options) => doctorOpenWebUITool(undefined, getHookCommandOptions(options)),
   pi: () => doctorPiExtension(),
   "qwen-code": (options) => doctorQwenCodeHook(undefined, options),
   roo: () => doctorRooInstructions(),
