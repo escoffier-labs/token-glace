@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { WRAP_AUTHORITATIVE_FOOTER } from "../../src/core/compaction-metadata.js";
+import { buildCompactionFooter } from "../../src/core/compaction-metadata.js";
 import { decorateWrapInlineText, isDirectModuleEntrypoint, parseArgs, resolveNoOmit } from "../../src/cli/main.js";
 import type { CompactResult } from "../../src/types.js";
 
@@ -28,49 +28,51 @@ describe("parseArgs", () => {
   });
 });
 
-describe("decorateWrapInlineText", () => {
-  it("keeps the authoritative footer for lossy summaries", () => {
-    const result: CompactResult = {
-      inlineText: "summary",
-      compaction: {
-        authoritative: true,
-        kinds: ["head-tail-omission"],
-      },
-      stats: {
-        rawChars: 4_000,
-        reducedChars: 40,
-        ratio: 0.01,
-      },
-      classification: {
-        family: "generic",
-        confidence: 0.9,
-        matchedReducer: "generic/fallback",
-      },
-    };
+function makeResult(authoritative: boolean, rawChars: number, reducedChars: number): CompactResult {
+  return {
+    inlineText: "summary",
+    compaction: {
+      authoritative,
+      kinds: authoritative ? ["head-tail-omission"] : ["no-omit-domain-passthrough"],
+    },
+    stats: {
+      rawChars,
+      reducedChars,
+      ratio: rawChars > 0 ? reducedChars / rawChars : 0,
+    },
+    classification: {
+      family: "generic",
+      confidence: 0.9,
+      matchedReducer: "generic/fallback",
+    },
+  };
+}
 
-    expect(decorateWrapInlineText(result, false)).toContain(WRAP_AUTHORITATIVE_FOOTER);
+describe("decorateWrapInlineText", () => {
+  it("adds a neutral compaction footer for substantial lossy summaries", () => {
+    const decorated = decorateWrapInlineText(makeResult(true, 4_000, 40), false);
+    expect(decorated).toContain(buildCompactionFooter(4_000, 40));
   });
 
-  it("suppresses the authoritative footer for lossless rewrites", () => {
-    const result: CompactResult = {
-      inlineText: "summary",
-      compaction: {
-        authoritative: false,
-        kinds: ["no-omit-domain-passthrough"],
-      },
-      stats: {
-        rawChars: 4_000,
-        reducedChars: 40,
-        ratio: 0.01,
-      },
-      classification: {
-        family: "generic",
-        confidence: 0.9,
-        matchedReducer: "generic/fallback",
-      },
-    };
+  it("uses a non-instructional footer with no do-not-verify language", () => {
+    const decorated = decorateWrapInlineText(makeResult(true, 4_000, 40), false);
+    for (const banned of ["Do not", "do not", "not retrievable", "Proceed with the task", "authoritative"]) {
+      expect(decorated).not.toContain(banned);
+    }
+  });
 
-    expect(decorateWrapInlineText(result, false)).toBe("summary");
+  it("suppresses the footer for lossless rewrites", () => {
+    expect(decorateWrapInlineText(makeResult(false, 4_000, 40), false)).toBe("summary");
+  });
+
+  it("suppresses the footer when too few characters were omitted", () => {
+    // 300 chars saved is below FOOTER_MIN_SAVED_CHARS even though the ratio is high.
+    expect(decorateWrapInlineText(makeResult(true, 400, 100), false)).toBe("summary");
+  });
+
+  it("suppresses the footer when the savings ratio is too small", () => {
+    // 1_500 chars saved clears the absolute floor, but 15% is below FOOTER_MIN_SAVED_RATIO.
+    expect(decorateWrapInlineText(makeResult(true, 10_000, 8_500), false)).toBe("summary");
   });
 });
 
