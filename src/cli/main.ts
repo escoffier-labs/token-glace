@@ -11,7 +11,7 @@ import { buildAnalysisEntry, discoverCandidates, doctorArtifacts, statsArtifacts
 import { verifyBuiltinFixtures } from "../core/fixtures.js";
 import { readNoOmissionFromEnv } from "../core/env.js";
 import { parseReduceJsonRequest } from "../core/json-protocol.js";
-import { WRAP_AUTHORITATIVE_FOOTER } from "../core/compaction-metadata.js";
+import { buildCompactionFooter } from "../core/compaction-metadata.js";
 import { reduceExecution } from "../core/reduce.js";
 import { verifyRules } from "../core/rules.js";
 import { runWrappedCommand } from "../core/wrap.js";
@@ -714,15 +714,25 @@ export function resolveNoOmit(noOmitFlag: boolean, env: NodeJS.ProcessEnv = proc
   return noOmitFlag || readNoOmissionFromEnv(env);
 }
 
+// Only annotate wrap output when compaction removed a substantial amount, so
+// small or barely-reduced outputs are returned verbatim without a footer.
+const FOOTER_MIN_SAVED_CHARS = 512;
+const FOOTER_MIN_SAVED_RATIO = 0.2;
+
 export function decorateWrapInlineText(result: WrapResult["result"], raw: boolean): string {
   const { rawChars, reducedChars } = result.stats;
   if (raw || !result.compaction?.authoritative || reducedChars === 0 || reducedChars >= rawChars) {
     return result.inlineText;
   }
+  const savedChars = rawChars - reducedChars;
+  const savedRatio = rawChars > 0 ? savedChars / rawChars : 0;
+  if (savedChars < FOOTER_MIN_SAVED_CHARS || savedRatio < FOOTER_MIN_SAVED_RATIO) {
+    return result.inlineText;
+  }
   const footer = [
     "",
     "---",
-    WRAP_AUTHORITATIVE_FOOTER,
+    buildCompactionFooter(rawChars, reducedChars),
   ].join("\n");
   return `${result.inlineText}${footer}`;
 }
