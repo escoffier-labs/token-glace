@@ -10,9 +10,9 @@
     "context",
     "developer-tools"
   ],
-  "homepage": "https://github.com/vincentkoc/tokenjuice",
+  "homepage": "https://github.com/solomonneas/tokenjuice",
   "bugs": {
-    "url": "https://github.com/vincentkoc/tokenjuice/issues"
+    "url": "https://github.com/solomonneas/tokenjuice/issues"
   },
   "funding": {
     "type": "github",
@@ -20,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vincentkoc/tokenjuice.git"
+    "url": "git+https://github.com/solomonneas/tokenjuice.git"
   },
   "license": "MIT",
   "type": "module",

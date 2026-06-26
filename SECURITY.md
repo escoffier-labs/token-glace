@@ -13,10 +13,12 @@ security fixes are applied to the latest released version.
 
 please use GitHub's private vulnerability reporting flow for this repository:
 
-- go to the `Security` tab in `vincentkoc/tokenjuice`
+- go to the `Security` tab in `solomonneas/tokenjuice`
 - choose `Report a vulnerability`
 
 please do not open a public issue for an unpatched vulnerability.
+
+this is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice). if a vulnerability affects the upstream reducer engine or CLI rather than this fork's maintenance, please also consider reporting it upstream so the fix reaches the original package.
 
 when reporting, include:
 

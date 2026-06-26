@@ -1,0 +1,60 @@
+name: Bug report
+description: Something is broken in tokenjuice, such as a reducer, the wrap/reduce/reduce-json surface, doctor, or a host integration.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you run, and what did you expect versus what you got?
+      placeholder: |
+        I ran `tokenjuice wrap -- pnpm test` and the failing assertion line got dropped.
+        I expected the assertion to be kept.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command and output
+      description: Paste the exact command and the relevant stdout/stderr. Redact tokens, private hostnames, and absolute paths.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: tokenjuice version
+      description: Output of `tokenjuice --version` (note if this is the fork built from source or the upstream npm/brew build).
+      placeholder: 0.8.0 (fork, built from source)
+    validations:
+      required: true
+  - type: input
+    id: install-method
+    attributes:
+      label: Install method
+      placeholder: source checkout, npm (upstream), pnpm, brew (upstream), etc.
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      placeholder: 20.11.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Ubuntu 24.04, macOS 14.5, etc.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scrub
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I have scrubbed tokens, private hostnames, and personal paths from this report.
+          required: true
+        - label: I have checked whether this also reproduces against upstream (vincentkoc/tokenjuice).
+          required: false
