@@ -1,14 +1,26 @@
-<img src="docs/tokenjuice.jpg" alt="tokenjuice banner"/>
+<p align="center">
+  <img src="docs/tokenjuice.jpg" alt="tokenjuice banner" width="900"/>
+</p>
 
-# tokenjuice 🧃
+<h1 align="center">tokenjuice 🧃</h1>
 
-lean output compaction for terminal-heavy agent workflows.
+<p align="center">
+  <strong>Deterministic output compaction for terminal-heavy agent workflows: run the command, trim the wall of terminal text, hand the harness a smaller payload, keep the raw bytes one flag away.</strong>
+</p>
 
-## what is tokenjuice?
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/solomonneas/tokenjuice/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status">
+  <img src="https://img.shields.io/github/v/tag/solomonneas/tokenjuice?style=for-the-badge&label=fork%20release&sort=semver" alt="Fork release">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+</p>
 
-tokenjuice is a deterministic output compactor for terminal-heavy agent workflows. agents and harnesses run noisy commands like `git status`, `pnpm test`, `docker build`, `rg`, or `pnpm --help`; tokenjuice keeps the command semantics untouched, observes the output after execution, and returns a smaller payload built from rule-driven reducers instead of dumping the whole wall of terminal text back into context.
+tokenjuice is a deterministic output compactor for terminal-heavy agent workflows: it runs noisy commands like `git status`, `pnpm test`, `docker build`, or `rg`, keeps the command semantics untouched, and returns a smaller payload built from rule-driven JSON reducers instead of dumping the whole wall of terminal text back into context. The reason is leverage: agent context is finite and expensive, so less transcript waste means fewer useless reruns and cleaner handoff between tools without making the shell magical. This repository is a fork of the upstream project that re-points its own project metadata (homepage, repository, issue tracker) at `solomonneas/tokenjuice` and tracks the build the Escoffier Labs agent fleet runs; the reducer engine, host integrations, and CLI surface are upstream's, used and extended under the MIT license.
 
-the point is leverage: less transcript waste, fewer useless reruns, and cleaner handoff between tools without making the shell magical. raw output stays available only when you explicitly ask for it through `--raw` / `--full` or opt-in artifact storage, rules stay inspectable JSON instead of LLM vibes, and host integrations stay thin wrappers around the same core reducer instead of becoming one-off adapter logic.
+> tokenjuice is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) by Vincent Koc, used and extended under the MIT license. The original project, its npm package, and its Homebrew tap remain Vincent's; this fork does not publish a separate package and credits the upstream author throughout. See [What this fork changes](#what-this-fork-changes).
+
+## What it does
+
+tokenjuice sits between an agent or harness and the noisy tools it calls. The command still runs untouched; tokenjuice observes the output after execution and returns a compacted, deterministic summary built from inspectable JSON reducers, so the language model gets a clean payload instead of token-burning terminal junk. It trims the fat from `git status`, `pnpm test`, `docker build`, `rg`, `pnpm --help`, and similar high-noise commands, while exact file-content reads stay raw and unsafe mixed command sequences are left alone. Raw output stays available only when you explicitly ask for it through `--raw` / `--full` or opt-in artifact storage, rules stay inspectable JSON instead of model vibes, and host integrations stay thin wrappers around the same core reducer instead of becoming one-off adapter logic.
 
 ## host integrations
 
@@ -124,6 +136,8 @@ beta integrations:
 
 ## install
 
+This fork is not published as a separate package. The `tokenjuice` name on npm and the `vincentkoc/tap` Homebrew tap both install the **upstream** build by Vincent Koc, not this fork's tree. To install upstream:
+
 ```bash
 npm install -g tokenjuice
 # or
@@ -133,6 +147,18 @@ yarn global add tokenjuice
 # or
 brew tap vincentkoc/tap
 brew install tokenjuice
+```
+
+To run **this fork's** tree instead, install from source:
+
+```bash
+git clone https://github.com/solomonneas/tokenjuice.git
+cd tokenjuice
+pnpm install
+pnpm build
+node dist/cli/main.js --version
+# optionally expose it on PATH:
+pnpm link --global   # then `tokenjuice --version`
 ```
 
 then:
@@ -199,6 +225,35 @@ tokenjuice discover
 tokenjuice doctor hooks
 tokenjuice stats --timezone utc
 ```
+
+## Why not something else?
+
+- **Raising the harness output limit** just moves the cost. A bigger context window still fills with `pnpm test` noise and `docker build` layer spam, and you pay for every token on every turn. tokenjuice shrinks the payload at the boundary instead of paying to carry it.
+- **An LLM-based summarizer** is non-deterministic, costs another model call, and can hallucinate away the one error line you needed. tokenjuice reduces with inspectable JSON rules, so the same input always produces the same output and nothing is invented.
+- **Truncating with `head` / `tail`** is blunt: it keeps the wrong lines, drops the failing assertion in the middle, and has no idea which command it is looking at. tokenjuice classifies the command first, then keeps the lines that matter for that command.
+- **Hand-rolled per-tool wrappers** scatter brittle parsing across every integration. tokenjuice keeps one shared reducer and thin host adapters, so a fix lands once and every host benefits.
+
+## What tokenjuice is not
+
+tokenjuice is an output compactor, not a shell, a sandbox, or a security tool.
+
+It does not:
+
+- rewrite, reorder, or reinterpret the command you run (the original command executes untouched)
+- sandbox commands or restrict what they are allowed to do
+- redact secrets or scrub sensitive content from output
+- discard raw bytes (raw stays one explicit `--raw` / `--full` flag, or opt-in artifact storage, away)
+- summarize with a model, guess, or invent lines that were not in the real output
+
+## What this fork changes
+
+This repository is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice). The upstream project owns the reducer engine, the host integration matrix, and the CLI surface. This fork:
+
+- re-points its own project metadata (`package.json` `homepage`, `repository`, and `bugs`) at `solomonneas/tokenjuice` so issues and source links for this tree resolve here
+- tracks the build the Escoffier Labs agent fleet runs, with fork-specific maintenance and integration work
+- retains Vincent Koc's copyright and the full MIT permission notice in [LICENSE](LICENSE), with a second copyright line added alongside, and keeps the upstream credit throughout this README
+
+This fork is not published as a separate npm package or Homebrew tap. The `tokenjuice` npm package and the `vincentkoc/tap` formula install upstream's build; run this fork [from source](#install). Contributions are welcome here, and improvements that are not fork-specific may also be offered upstream to [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## adapter JSON
 

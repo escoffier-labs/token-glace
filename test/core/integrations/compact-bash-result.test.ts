@@ -274,7 +274,7 @@ describe("compactBashResult", () => {
     const longOutput = Array.from({ length: 30 }, (_, index) => `commit ${index + 1} ${"x".repeat(120)}`).join("\n");
     const outcome = await compactBashResult({
       source: "pi",
-      command: "cd /home/clawdbot/repos/astro-portfolio && git log -30",
+      command: "cd /home/user/repos/example-project && git log -30",
       visibleText: longOutput,
       maxInlineChars: 1200,
       skipInspectionCommands: true,
