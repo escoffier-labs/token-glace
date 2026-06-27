@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/tokenjuice.jpg" alt="tokenjuice banner" width="900"/>
+  <img src="docs/assets/tokenjuice-social-preview.jpg" alt="tokenjuice banner" width="900">
 </p>
 
 <h1 align="center">tokenjuice 🧃</h1>
@@ -9,14 +9,18 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/solomonneas/tokenjuice/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status">
-  <img src="https://img.shields.io/github/v/tag/solomonneas/tokenjuice?style=for-the-badge&label=fork%20release&sort=semver" alt="Fork release">
+  <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/tokenjuice/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status">
+  <img src="https://img.shields.io/github/v/tag/escoffier-labs/tokenjuice?style=for-the-badge&label=fork%20release&sort=semver" alt="Fork release">
   <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
 </p>
 
-tokenjuice is a deterministic output compactor for terminal-heavy agent workflows: it runs noisy commands like `git status`, `pnpm test`, `docker build`, or `rg`, keeps the command semantics untouched, and returns a smaller payload built from rule-driven JSON reducers instead of dumping the whole wall of terminal text back into context. The reason is leverage: agent context is finite and expensive, so less transcript waste means fewer useless reruns and cleaner handoff between tools without making the shell magical. This repository is a fork of the upstream project that re-points its own project metadata (homepage, repository, issue tracker) at `solomonneas/tokenjuice` and tracks the build the Escoffier Labs agent fleet runs; the reducer engine, host integrations, and CLI surface are upstream's, used and extended under the MIT license.
+<p align="center">
+  A fork maintained by <a href="https://github.com/escoffier-labs">Escoffier Labs</a> &middot; original by <a href="https://github.com/vincentkoc/tokenjuice">Vincent Koc</a>
+</p>
 
-> tokenjuice is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) by Vincent Koc, used and extended under the MIT license. The original project, its npm package, and its Homebrew tap remain Vincent's; this fork does not publish a separate package and credits the upstream author throughout. See [What this fork changes](#what-this-fork-changes).
+tokenjuice is a deterministic output compactor for terminal-heavy agent workflows: it runs noisy commands like `git status`, `pnpm test`, `docker build`, or `rg`, keeps the command semantics untouched, and returns a smaller payload built from rule-driven JSON reducers instead of dumping the whole wall of terminal text back into context. The reason is leverage: agent context is finite and expensive, so less transcript waste means fewer useless reruns and cleaner handoff between tools without making the shell magical. This repository is a fork of the upstream project that re-points its own project metadata (homepage, repository, issue tracker) at `escoffier-labs/tokenjuice` and tracks the build the Escoffier Labs agent fleet runs; the reducer engine, host integrations, and CLI surface are upstream's, used and extended under the MIT license.
+
+> tokenjuice is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) by Vincent Koc, used and extended under the MIT license; we are also a contributor to the upstream project. The original project, its npm package, and its Homebrew tap remain Vincent's; this fork does not publish a separate package and credits the upstream author throughout. See [What this fork changes](#what-this-fork-changes).
 
 ## What it does
 
@@ -152,7 +156,7 @@ brew install tokenjuice
 To run **this fork's** tree instead, install from source:
 
 ```bash
-git clone https://github.com/solomonneas/tokenjuice.git
+git clone https://github.com/escoffier-labs/tokenjuice.git
 cd tokenjuice
 pnpm install
 pnpm build
@@ -249,7 +253,7 @@ It does not:
 
 This repository is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice). The upstream project owns the reducer engine, the host integration matrix, and the CLI surface. This fork:
 
-- re-points its own project metadata (`package.json` `homepage`, `repository`, and `bugs`) at `solomonneas/tokenjuice` so issues and source links for this tree resolve here
+- re-points its own project metadata (`package.json` `homepage`, `repository`, and `bugs`) at `escoffier-labs/tokenjuice` so issues and source links for this tree resolve here
 - tracks the build the Escoffier Labs agent fleet runs, with fork-specific maintenance and integration work
 - retains Vincent Koc's copyright and the full MIT permission notice in [LICENSE](LICENSE), with a second copyright line added alongside, and keeps the upstream credit throughout this README
 
