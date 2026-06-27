@@ -19,6 +19,7 @@ import {
   uninstallClaudeCodeHook,
 } from "../../src/index.js";
 import { getInstalledHookIntegrations } from "../../src/hosts/shared/hook-doctor.js";
+import { resolveClaudeCodeMinReduceChars } from "../../src/hosts/claude-code/index.js";
 
 const tempDirs: string[] = [];
 const originalPath = process.env.PATH;
@@ -31,6 +32,7 @@ afterEach(async () => {
   delete process.env.CLAUDE_CONFIG_DIR;
   delete process.env.CLAUDE_HOME;
   delete process.env.TOKENJUICE_CLAUDE_CODE_SHELL;
+  delete process.env.TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS;
   delete process.env.CODEBUDDY_CONFIG_DIR;
   delete process.env.CODEBUDDY_HOME;
   delete process.env.CODEX_HOME;
@@ -891,9 +893,26 @@ describe("runClaudeCodePreToolUseHook", () => {
     expect(response.hookSpecificOutput?.updatedInput?.timeout).toBe(120000);
     expect(response.hookSpecificOutput?.updatedInput?.run_in_background).toBe(false);
     expect(response.hookSpecificOutput?.updatedInput?.command).toContain("/usr/local/bin/tokenjuice wrap --source claude-code --");
+    expect(response.hookSpecificOutput?.updatedInput?.command).toContain("--min-reduce-chars 16384");
     expect(response.hookSpecificOutput?.updatedInput?.command).toContain(shellPath);
     expect(response.hookSpecificOutput?.updatedInput?.command).toContain("git status --short && pnpm test");
   });
+
+describe("resolveClaudeCodeMinReduceChars", () => {
+  it("defaults to the Claude Code threshold (16384)", () => {
+    expect(resolveClaudeCodeMinReduceChars({})).toBe(16384);
+  });
+
+  it("honors a valid positive integer override", () => {
+    expect(resolveClaudeCodeMinReduceChars({ TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS: "65536" })).toBe(65536);
+  });
+
+  it("falls back to the default for invalid values", () => {
+    expect(resolveClaudeCodeMinReduceChars({ TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS: "0" })).toBe(16384);
+    expect(resolveClaudeCodeMinReduceChars({ TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS: "-5" })).toBe(16384);
+    expect(resolveClaudeCodeMinReduceChars({ TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS: "abc" })).toBe(16384);
+  });
+});
 
   it("uses a node launcher when the wrap launcher is a local js entrypoint", async () => {
     const home = await createTempDir();

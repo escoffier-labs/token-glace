@@ -92,6 +92,12 @@ export async function runWrappedCommand(argv: string[], opts: WrapOptions = {}):
     child.on("error", reject);
     child.on("close", async (code) => {
       try {
+        // When the captured output is small enough, skip reduction entirely and
+        // return it raw (no omission, no footer). Lets hosts with large context
+        // windows compact only genuinely large output.
+        const belowMinReduce = typeof opts.minReduceChars === "number"
+          && opts.minReduceChars > 0
+          && combined.text.length <= opts.minReduceChars;
         const result = await reduceExecution(
           {
             toolName: "exec",
@@ -108,7 +114,7 @@ export async function runWrappedCommand(argv: string[], opts: WrapOptions = {}):
           },
           {
             raw: opts.raw ?? false,
-            noOmit: opts.noOmit ?? false,
+            noOmit: (opts.noOmit ?? false) || belowMinReduce,
             trace: opts.trace ?? false,
             recordStats: opts.recordStats ?? false,
             store: opts.store ?? false,
