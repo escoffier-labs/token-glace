@@ -27,21 +27,28 @@ jobs:
             exit 1
           fi
 
-      - name: Validate tap configuration
+      - name: Check tap configuration
+        id: tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}" ]; then
-            echo "Secret HOMEBREW_TAP_GITHUB_TOKEN is required."
-            exit 1
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping Homebrew tap sync: HOMEBREW_TAP_GITHUB_TOKEN is not configured."
+            exit 0
           fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repository
+        if: steps.tap.outputs.enabled == 'true'
         uses: actions/checkout@v5
         with:
-          repository: vincentkoc/tap
+          repository: ${{ vars.HOMEBREW_TAP_REPOSITORY || 'vincentkoc/tap' }}
           token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       - name: Update formula
+        if: steps.tap.outputs.enabled == 'true'
         env:
           TAG: ${{ inputs.tag_name }}
           SOURCE_REPO: ${{ github.repository }}
@@ -101,6 +108,7 @@ jobs:
           EOF
 
       - name: Commit and push formula update
+        if: steps.tap.outputs.enabled == 'true'
         env:
           TAG: ${{ inputs.tag_name }}
         run: |
