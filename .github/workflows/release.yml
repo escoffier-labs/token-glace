@@ -118,7 +118,7 @@ jobs:
           SKIP_CLOUDSMITH: ${{ inputs.skip_cloudsmith }}
         run: |
           set -euo pipefail
-          REPO="vincentkoc/tokenjuice"
+          REPO="${GITHUB_REPOSITORY}"
           if [ "${SKIP_CLOUDSMITH:-false}" = "true" ]; then
             echo "CLOUDSMITH_ENABLED=0" >> "$GITHUB_ENV"
             echo "Cloudsmith publish disabled by workflow input."
@@ -228,5 +228,7 @@ jobs:
           EOF
 
       - name: Publish npm package
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
