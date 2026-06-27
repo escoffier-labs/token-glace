@@ -158,6 +158,7 @@ type ParsedArgs = {
   noOmit: boolean;
   storeDir: string | undefined;
   maxInlineChars: number | undefined;
+  minReduceChars: number | undefined;
   maxCaptureBytes: number | undefined;
   maxInputBytes: number | undefined;
   timeZone: string | undefined;
@@ -413,6 +414,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let noOmit = false;
   let storeDir: string | undefined;
   let maxInlineChars: number | undefined;
+  let minReduceChars: number | undefined;
   let maxCaptureBytes: number | undefined;
   let maxInputBytes: number | undefined;
   let timeZone: string | undefined;
@@ -512,6 +514,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
         maxInlineChars = Number(next);
         index += 2;
         break;
+      case "--min-reduce-chars":
+        if (!next || !Number.isInteger(Number(next)) || Number(next) <= 0) {
+          throw new Error("--min-reduce-chars requires a positive integer");
+        }
+        minReduceChars = Number(next);
+        index += 2;
+        break;
       case "--max-capture-bytes":
         if (!next || !Number.isInteger(Number(next)) || Number(next) <= 0) {
           throw new Error("--max-capture-bytes requires a positive integer");
@@ -579,6 +588,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     noOmit,
     storeDir,
     maxInlineChars,
+    minReduceChars,
     maxCaptureBytes,
     maxInputBytes,
     timeZone,
@@ -702,6 +712,7 @@ async function runWrap(args: ParsedArgs): Promise<number> {
     ...(args.store ? { store: true } : {}),
     ...(args.storeDir ? { storeDir: args.storeDir } : {}),
     ...(typeof args.maxInlineChars === "number" ? { maxInlineChars: args.maxInlineChars } : {}),
+    ...(typeof args.minReduceChars === "number" ? { minReduceChars: args.minReduceChars } : {}),
     ...(typeof args.maxCaptureBytes === "number" ? { maxCaptureBytes: args.maxCaptureBytes } : {}),
     ...(args.source ? { source: args.source } : {}),
   });

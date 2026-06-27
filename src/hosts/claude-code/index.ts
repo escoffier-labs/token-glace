@@ -78,6 +78,12 @@ const TOKENJUICE_CLAUDE_CODE_FIX_COMMAND = "tokenjuice install claude-code";
 const TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND = "claude-code-pre-tool-use";
 const TOKENJUICE_CLAUDE_CODE_LEGACY_HOOK_SUBCOMMAND = "claude-code-post-tool-use";
 const TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS = 10;
+// Claude Code has a large context window and truncates oversized Bash output on
+// its own, so it only benefits from compaction on genuinely large output.
+// Output at or below this many characters passes through untouched (no
+// reduction, no footer); only larger output is compacted. Override with
+// TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS.
+const TOKENJUICE_CLAUDE_CODE_DEFAULT_MIN_REDUCE_CHARS = 16384;
 
 function getClaudeCodeHome(): string {
   // Claude Code resolves its config directory from CLAUDE_CONFIG_DIR, so honor
@@ -282,6 +288,17 @@ async function resolveClaudeCodeHostShell(toolInput: ClaudeCodeBashToolInput): P
   ]);
 }
 
+export function resolveClaudeCodeMinReduceChars(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS;
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return TOKENJUICE_CLAUDE_CODE_DEFAULT_MIN_REDUCE_CHARS;
+}
+
 export async function installClaudeCodeHook(
   settingsPath = getDefaultSettingsPath(),
   options: ClaudeCodeHookCommandOptions = {},
@@ -460,7 +477,13 @@ export async function runClaudeCodePreToolUseHook(rawText: string, wrapLauncher 
     return 0;
   }
 
-  const wrappedCommand = buildWrappedCommand({ wrapLauncher, shellPath, command, source: "claude-code" });
+  const wrappedCommand = buildWrappedCommand({
+    wrapLauncher,
+    shellPath,
+    command,
+    source: "claude-code",
+    minReduceChars: resolveClaudeCodeMinReduceChars(),
+  });
   const response = {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

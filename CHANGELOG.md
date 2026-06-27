@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- Add a `tokenjuice wrap --min-reduce-chars <n>` size gate: output at or below `<n>` characters passes through raw (no reduction, no footer); only larger output is compacted. The Claude Code PreToolUse hook now defaults this to 16384 (override with `TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS`), since Claude Code has a large context window and truncates oversized output itself, so the stock 1200-char default footnoted routine command output. Other hosts keep stock behavior.
+
 ### Fixes
 
 - Replace the compacted-output footer with a neutral, factual marker (characters omitted plus how to retrieve the full output) and only emit it when compaction removed a substantial amount, so tokenjuice no longer appends do-not-verify directives or footnotes tiny, untruncated output.

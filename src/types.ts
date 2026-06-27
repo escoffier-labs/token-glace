@@ -227,6 +227,8 @@ export type WrapOptions = {
   trace?: boolean;
   maxInlineChars?: number;
   maxCaptureBytes?: number;
+  /** Skip reduction entirely (return raw output, no footer) when the captured output is at or below this many characters. */
+  minReduceChars?: number;
 };
 
 export type WrapResult = {

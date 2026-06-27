@@ -187,13 +187,18 @@ export function buildWrappedCommand(params: {
   command: string;
   source?: string;
   nodePath?: string;
+  /** Host-specific size gate; output at or below this many chars passes through untouched (no reduction, no footer). */
+  minReduceChars?: number;
 }): string {
   const nodePath = params.nodePath ?? process.execPath;
   const launcherCommand = params.wrapLauncher.endsWith(".js")
     ? `${shellQuote(nodePath)} ${shellQuote(params.wrapLauncher)}`
     : shellQuote(params.wrapLauncher);
   const sourceArgs = params.source ? ` --source ${shellQuote(params.source)}` : "";
-  return `${launcherCommand} wrap${sourceArgs} -- ${shellQuote(params.shellPath)} -lc ${shellQuote(params.command)}`;
+  const gateArgs = typeof params.minReduceChars === "number" && params.minReduceChars > 0
+    ? ` --min-reduce-chars ${params.minReduceChars}`
+    : "";
+  return `${launcherCommand} wrap${sourceArgs}${gateArgs} -- ${shellQuote(params.shellPath)} -lc ${shellQuote(params.command)}`;
 }
 
 /**
