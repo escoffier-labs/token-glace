@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a new reducer, rule, host integration, or CLI improvement for tokenjuice.
+description: Suggest a new reducer, rule, host integration, or CLI improvement for Token Glace.
 labels: ["enhancement"]
 body:
   - type: textarea

@@ -1,4 +1,4 @@
-name: tokenjuice
+name: token-glace
 arch: __ARCH__
 platform: linux
 version: __VERSION__
@@ -7,29 +7,33 @@ priority: optional
 maintainer: Vincent Koc <vincent@openclaw.ai>
 description: |
   Lean output compaction for terminal-heavy agent workflows.
-homepage: https://github.com/vincentkoc/tokenjuice
+homepage: https://github.com/escoffier-labs/token-glace
 license: MIT
 
 depends:
   - nodejs
 
 contents:
-  - src: ./release/tokenjuice-v__VERSION__/dist
-    dst: /usr/lib/tokenjuice/dist
-  - src: ./release/tokenjuice-v__VERSION__/package.json
-    dst: /usr/lib/tokenjuice/package.json
+  - src: ./release/token-glace-v__VERSION__/dist
+    dst: /usr/lib/token-glace/dist
+  - src: ./release/token-glace-v__VERSION__/package.json
+    dst: /usr/lib/token-glace/package.json
+  - src: ./packaging/token-glace.sh
+    dst: /usr/bin/token-glace
+    file_info:
+      mode: 0755
   - src: ./packaging/tokenjuice.sh
     dst: /usr/bin/tokenjuice
     file_info:
       mode: 0755
-  - src: ./release/tokenjuice-v__VERSION__/README.md
-    dst: /usr/share/doc/tokenjuice/README.md
-  - src: ./release/tokenjuice-v__VERSION__/LICENSE
-    dst: /usr/share/licenses/tokenjuice/LICENSE
+  - src: ./release/token-glace-v__VERSION__/README.md
+    dst: /usr/share/doc/token-glace/README.md
+  - src: ./release/token-glace-v__VERSION__/LICENSE
+    dst: /usr/share/licenses/token-glace/LICENSE
 
 deb:
   fields:
-    Bugs: https://github.com/vincentkoc/tokenjuice/issues
+    Bugs: https://github.com/escoffier-labs/token-glace/issues
 
 rpm:
   summary: Lean output compaction for terminal-heavy agent workflows

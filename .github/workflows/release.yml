@@ -95,14 +95,14 @@ jobs:
           nfpm package \
             --config release/nfpm-deb.yaml \
             --packager deb \
-            --target "release/tokenjuice_${RELEASE_VERSION}_all.deb"
+            --target "release/token-glace_${RELEASE_VERSION}_all.deb"
 
           sed -e "s/__VERSION__/${RELEASE_VERSION}/g" -e "s/__ARCH__/noarch/g" \
             packaging/nfpm.yaml > release/nfpm-rpm.yaml
           nfpm package \
             --config release/nfpm-rpm.yaml \
             --packager rpm \
-            --target "release/tokenjuice-${RELEASE_VERSION}-1.noarch.rpm"
+            --target "release/token-glace-${RELEASE_VERSION}-1.noarch.rpm"
 
           pnpm release:checksums
           pnpm release:formula
@@ -151,7 +151,7 @@ jobs:
           DISTRO="${CLOUDSMITH_DISTRIBUTION:-ubuntu}"
           RELEASE="${CLOUDSMITH_RELEASE:-jammy}"
           TARGET="${CLOUDSMITH_REPO}/${DISTRO}/${RELEASE}"
-          cloudsmith push deb "${TARGET}" "release/tokenjuice_${RELEASE_VERSION}_all.deb" --no-wait-for-sync
+          cloudsmith push deb "${TARGET}" "release/token-glace_${RELEASE_VERSION}_all.deb" --no-wait-for-sync
 
       - name: Publish RPM packages to Cloudsmith
         if: ${{ env.CLOUDSMITH_ENABLED == '1' }}
@@ -165,7 +165,7 @@ jobs:
           DISTRO="${CLOUDSMITH_RPM_DISTRIBUTION:-el}"
           RELEASE="${CLOUDSMITH_RPM_RELEASE:-9}"
           TARGET="${CLOUDSMITH_REPO}/${DISTRO}/${RELEASE}"
-          cloudsmith push rpm "${TARGET}" "release/tokenjuice-${RELEASE_VERSION}-1.noarch.rpm" --no-wait-for-sync
+          cloudsmith push rpm "${TARGET}" "release/token-glace-${RELEASE_VERSION}-1.noarch.rpm" --no-wait-for-sync
 
       - name: Detect existing GitHub release
         id: existing_release
@@ -190,7 +190,7 @@ jobs:
           publish: true
           tag: ${{ env.RELEASE_TAG }}
           version: ${{ env.RELEASE_VERSION }}
-          name: "tokenjuice ${{ env.RELEASE_TAG }}"
+          name: "Token Glace ${{ env.RELEASE_TAG }}"
           prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,11 +201,11 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "${RELEASE_TAG}" \
-            release/tokenjuice-v*.tar.gz \
-            release/tokenjuice_*.deb \
-            release/tokenjuice-*.rpm \
+            release/token-glace-v*.tar.gz \
+            release/token-glace_*.deb \
+            release/token-glace-*.rpm \
             release/sha256sums.txt \
-            release/Formula/tokenjuice.rb \
+            release/Formula/token-glace.rb \
             --clobber
 
       - name: Sync Homebrew tap

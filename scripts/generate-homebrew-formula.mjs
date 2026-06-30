@@ -22,7 +22,7 @@ function parseArgs(argv) {
 
 function parseRepositoryUrl(repository) {
   if (!repository || typeof repository !== "object" || typeof repository.url !== "string") {
-    return "https://github.com/vincentkoc/tokenjuice";
+    return "https://github.com/escoffier-labs/token-glace";
   }
 
   return repository.url
@@ -38,7 +38,7 @@ async function main() {
     throw new Error("package.json version is required");
   }
 
-  const artifactName = `tokenjuice-v${version}.tar.gz`;
+  const artifactName = `token-glace-v${version}.tar.gz`;
   const sumsPath = join(releaseRoot, "sha256sums.txt");
   const sumsText = await readFile(sumsPath, "utf8").catch(async () => {
     const fallbackPath = join(releaseRoot, `${artifactName}.sha256`);
@@ -56,9 +56,9 @@ async function main() {
   }
 
   const repoUrl = parseRepositoryUrl(packageJson.repository);
-  const outputPath = args.output ? resolve(repoRoot, args.output) : join(releaseRoot, "Formula", "tokenjuice.rb");
+  const outputPath = args.output ? resolve(repoRoot, args.output) : join(releaseRoot, "Formula", "token-glace.rb");
 
-  const formula = `class Tokenjuice < Formula
+  const formula = `class TokenGlace < Formula
   desc "Lean output compaction for terminal-heavy agent workflows"
   homepage "${repoUrl}"
   url "${repoUrl}/releases/download/v${version}/${artifactName}"
@@ -71,15 +71,17 @@ async function main() {
   def install
     libexec.install "dist", "package.json", "README.md", "LICENSE"
 
-    (bin/"tokenjuice").write <<~EOS
-      #!/bin/bash
-      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/dist/cli/main.js" "$@"
-    EOS
-    (bin/"tokenjuice").chmod 0755
+    ["token-glace", "tokenjuice"].each do |bin_name|
+      (bin/bin_name).write <<~EOS
+        #!/bin/bash
+        exec "#{Formula["node"].opt_bin}/node" "#{libexec}/dist/cli/main.js" "$@"
+      EOS
+      (bin/bin_name).chmod 0755
+    end
   end
 
   test do
-    assert_equal "${version}", shell_output("#{bin}/tokenjuice --version").strip
+    assert_equal "${version}", shell_output("#{bin}/token-glace --version").strip
   end
 end
 `;

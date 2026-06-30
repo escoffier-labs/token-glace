@@ -1,5 +1,5 @@
 {
-  "name": "tokenjuice",
+  "name": "token-glace",
   "version": "0.8.2",
   "description": "Lean output compaction for terminal-heavy agent workflows.",
   "keywords": [
@@ -10,9 +10,9 @@
     "context",
     "developer-tools"
   ],
-  "homepage": "https://github.com/escoffier-labs/tokenjuice",
+  "homepage": "https://github.com/escoffier-labs/token-glace",
   "bugs": {
-    "url": "https://github.com/escoffier-labs/tokenjuice/issues"
+    "url": "https://github.com/escoffier-labs/token-glace/issues"
   },
   "funding": {
     "type": "github",
@@ -20,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/escoffier-labs/tokenjuice.git"
+    "url": "git+https://github.com/escoffier-labs/token-glace.git"
   },
   "license": "MIT",
   "type": "module",
@@ -28,6 +28,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
+    "token-glace": "dist/cli/main.js",
     "tokenjuice": "dist/cli/main.js"
   },
   "exports": {

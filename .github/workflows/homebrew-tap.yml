@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
-          TARBALL="tokenjuice-v${VERSION}.tar.gz"
+          TARBALL="token-glace-v${VERSION}.tar.gz"
           CHECKSUMS_URL="https://github.com/${SOURCE_REPO}/releases/download/${TAG}/sha256sums.txt"
           TARBALL_URL="https://github.com/${SOURCE_REPO}/releases/download/${TAG}/${TARBALL}"
 
@@ -80,8 +80,8 @@ jobs:
           fi
 
           mkdir -p Formula
-          cat > Formula/tokenjuice.rb <<EOF
-          class Tokenjuice < Formula
+          cat > Formula/token-glace.rb <<EOF
+          class TokenGlace < Formula
             desc "Lean output compaction for terminal-heavy agent workflows"
             homepage "https://github.com/${SOURCE_REPO}"
             url "${TARBALL_URL}"
@@ -94,15 +94,17 @@ jobs:
             def install
               libexec.install "dist", "package.json", "README.md", "LICENSE"
 
-              (bin/"tokenjuice").write <<~EOS
-                #!/bin/bash
-                exec "#{Formula["node"].opt_bin}/node" "#{libexec}/dist/cli/main.js" "\$@"
-              EOS
-              (bin/"tokenjuice").chmod 0755
+              ["token-glace", "tokenjuice"].each do |bin_name|
+                (bin/bin_name).write <<~EOS
+                  #!/bin/bash
+                  exec "#{Formula["node"].opt_bin}/node" "#{libexec}/dist/cli/main.js" "\$@"
+                EOS
+                (bin/bin_name).chmod 0755
+              end
             end
 
             test do
-              assert_equal "${VERSION}", shell_output("#{bin}/tokenjuice --version").strip
+              assert_equal "${VERSION}", shell_output("#{bin}/token-glace --version").strip
             end
           end
           EOF
@@ -113,13 +115,13 @@ jobs:
           TAG: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
-          git add Formula/tokenjuice.rb
+          git add Formula/token-glace.rb
           if git diff --cached --quiet; then
             echo "No tap changes to commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: update tokenjuice formula for ${TAG}"
+          git commit -m "chore: update token-glace formula for ${TAG}"
           git pull --rebase origin main
           git push

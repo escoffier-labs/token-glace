@@ -37,7 +37,7 @@ async function main() {
     fail("package.json version is required");
   }
 
-  const releaseDirName = `tokenjuice-v${version}`;
+  const releaseDirName = `token-glace-v${version}`;
   const stagingDir = join(releaseRoot, releaseDirName);
   const tarballName = `${releaseDirName}.tar.gz`;
   const tarballPath = join(releaseRoot, tarballName);
@@ -65,9 +65,11 @@ NODE_BIN="\${NODE_BIN:-node}"
 exec "$NODE_BIN" "$SCRIPT_DIR/../dist/cli/main.js" "$@"
 `;
 
-  const launcherPath = join(stagingDir, "bin", "tokenjuice");
-  await writeFile(launcherPath, launcher, "utf8");
-  await chmod(launcherPath, 0o755);
+  for (const binName of ["token-glace", "tokenjuice"]) {
+    const launcherPath = join(stagingDir, "bin", binName);
+    await writeFile(launcherPath, launcher, "utf8");
+    await chmod(launcherPath, 0o755);
+  }
 
   runTar(releaseDirName, tarballPath);
 

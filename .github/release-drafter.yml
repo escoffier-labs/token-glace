@@ -1,4 +1,4 @@
-name-template: "tokenjuice v$RESOLVED_VERSION"
+name-template: "Token Glace v$RESOLVED_VERSION"
 tag-template: "v$RESOLVED_VERSION"
 category-template: "### $TITLE"
 change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
@@ -114,7 +114,7 @@ autolabeler:
     title:
       - '/^dependencies(\(.+\))?:/i'
 template: |
-  ## tokenjuice v$RESOLVED_VERSION
+  ## Token Glace v$RESOLVED_VERSION
 
   lean output compaction for terminal-heavy agent workflows.
 
