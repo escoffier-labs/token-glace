@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.8.3 - 2026-07-01
+
+### Changed
+
+- Rebrand the fork as Token Glace: the npm package is now `token-glace` and installs a `token-glace` command alongside the existing `tokenjuice` alias, `package.json` metadata points at `escoffier-labs/token-glace`, and release artifacts (tarball, deb, rpm, Homebrew formula) are published under the `token-glace` name.
+
+### Fixes
+
+- Skip the Homebrew tap sync step when no tap token is configured instead of failing the release workflow.
+
+### Documentation
+
+- Rework the README, issue templates, and packaging descriptions around the Token Glace name, and crop the social preview banner to a normalized 21:9.
+
 ## 0.8.2 - 2026-06-27
 
 ### Features
