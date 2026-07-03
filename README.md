@@ -24,9 +24,9 @@ Token Glace is a deterministic output compactor for terminal-heavy agent workflo
 > Token Glace is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) by Vincent Koc, used and extended under the MIT license; we are also a contributor to the upstream project. The original project, its npm package, and its Homebrew tap remain Vincent's, while this fork publishes and documents the `token-glace` command. See [What this fork changes](#what-this-fork-changes).
 
 <p align="center">
-  <img src="docs/assets/tokenjuice-compaction.svg" alt="Recording: token-glace wrap compacts a 6000-line command to a head/tail summary with a neutral footer, and --raw returns the full output" width="820">
+  <img src="docs/assets/token-glace-compaction.svg" alt="Recording: token-glace wrap compacts a 6000-line command to a head/tail summary with a neutral footer, and --raw returns the full output" width="820">
   <br>
-  <em><code>tokenjuice wrap -- seq 1 6000</code> returns <code>... 5984 lines omitted ...</code> and reports <code>[tokenjuice] Output compacted to save tokens (28811 of 28893 characters omitted).</code></em>
+  <em><code>token-glace wrap -- seq 1 6000</code> returns <code>... 5984 lines omitted ...</code> and reports <code>[tokenjuice] Output compacted to save tokens (28811 of 28893 characters omitted).</code></em>
 </p>
 
 Wrap any noisy command and Token Glace returns a compacted, deterministic payload with a neutral footer noting what was omitted. The raw bytes stay one `--raw` flag away.
