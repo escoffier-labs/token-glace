@@ -9,9 +9,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/token-glace/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status">
-  <img src="https://img.shields.io/github/v/tag/escoffier-labs/token-glace?style=for-the-badge&label=fork%20release&sort=semver" alt="Fork release">
-  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+  <img src="https://shieldcn.dev/github/ci/escoffier-labs/token-glace.svg?workflow=ci.yml&branch=main&label=ci&size=xs" alt="CI status">
+  <img src="https://shieldcn.dev/badge/registry-v0.8.3-blue.svg?size=xs" alt="Registry version">
+  <img src="https://shieldcn.dev/badge/language-TypeScript-3178c6.svg?size=xs" alt="Language: TypeScript">
+  <img src="https://shieldcn.dev/badge/license-MIT-green.svg?size=xs" alt="MIT license">
 </p>
 
 <p align="center">
@@ -24,6 +25,8 @@ Token Glace is a deterministic output compactor for terminal-heavy agent workflo
 
 <p align="center">
   <img src="docs/assets/tokenjuice-compaction.svg" alt="Recording: token-glace wrap compacts a 6000-line command to a head/tail summary with a neutral footer, and --raw returns the full output" width="820">
+  <br>
+  <em><code>tokenjuice wrap -- seq 1 6000</code> returns <code>... 5984 lines omitted ...</code> and reports <code>[tokenjuice] Output compacted to save tokens (28811 of 28893 characters omitted).</code></em>
 </p>
 
 Wrap any noisy command and Token Glace returns a compacted, deterministic payload with a neutral footer noting what was omitted. The raw bytes stay one `--raw` flag away.
@@ -38,7 +41,7 @@ Token Glace installs a thin hook, extension, rule, or guidance file into your cl
 
 See **[docs/integrations.md](docs/integrations.md)** for the full client list, each install command, and the hook file it writes.
 
-## install
+## Install
 
 The `tokenjuice` name on npm and the `vincentkoc/tap` Homebrew tap install the **upstream** build by Vincent Koc. To install upstream:
 
@@ -82,7 +85,7 @@ openclaw config set plugins.entries.tokenjuice.enabled true
 
 this requires OpenClaw `2026.4.22` or newer.
 
-## commands
+## Commands
 
 ```bash
 token-glace --help
@@ -106,7 +109,7 @@ token-glace stats
 token-glace stats --timezone utc
 ```
 
-## overview
+## Overview
 
 Token Glace has three surfaces. `reduce` compacts text that already exists, `wrap` runs a command and compacts the observed output, and `reduce-json` gives host adapters a stable machine protocol. host integrations are intentionally thin: they install a hook, extension, rule, or guidance file; call the shared compactor; and return compacted context through the host's native surface. use `token-glace doctor hooks` to check installed wiring, `token-glace doctor <host>` for one integration, and `token-glace install <host> --local` when validating the current repo build before release.
 
@@ -159,7 +162,7 @@ This repository is a fork of [vincentkoc/tokenjuice](https://github.com/vincentk
 
 The `tokenjuice` npm package and the `vincentkoc/tap` formula install upstream's build; run this fork [from source](#install) as `token-glace`. Contributions are welcome here, and improvements that are not fork-specific may also be offered upstream to [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## adapter JSON
+## Adapter JSON
 
 `reduce-json` is the machine-facing adapter command. it reads JSON from stdin or a file and always writes JSON to stdout; see the [spec](docs/spec.md) for envelope options and adapter behavior.
 
@@ -181,7 +184,7 @@ direct payload:
 - [spec](docs/spec.md), [rules](docs/rules.md), [integration playbook](docs/integration-playbook.md)
 - [security](SECURITY.md)
 
-## status
+## Status
 
 usable foundation for token reduction with diagnostics and a growing reducer set, now focused on deeper coverage and tuning.
 
