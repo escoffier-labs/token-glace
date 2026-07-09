@@ -5,7 +5,19 @@
 <h1 align="center">Token Glace</h1>
 
 <p align="center">
-  <strong>Deterministic output compaction for terminal-heavy agent workflows: run the command, trim the wall of terminal text, hand the harness a smaller payload, keep the raw bytes one flag away.</strong>
+  <img src="docs/assets/marks/token-glace-circle.svg" alt="" width="40" height="40">
+</p>
+
+<p align="center">
+  <strong>Noisy tools burn context. Glace hands the agent the compacted payload.</strong>
+</p>
+
+<p align="center">
+  Deterministic terminal output compaction: run the command untouched, return a smaller payload from inspectable JSON reducers, keep raw one flag away. Brigade station: brigade add tokens.
+</p>
+
+<p align="center">
+  <a href="https://brigade.tools/token-glace">Website</a> &middot; <a href="#install">Install</a> &middot; <a href="https://github.com/vincentkoc/tokenjuice">Upstream tokenjuice</a>
 </p>
 
 <p align="center">
@@ -15,25 +27,34 @@
   <img src="https://shieldcn.dev/badge/license-MIT-green.svg?size=xs" alt="MIT license">
 </p>
 
-<p align="center">
-  A fork maintained by <a href="https://github.com/escoffier-labs">Escoffier Labs</a> &middot; original by <a href="https://github.com/vincentkoc/tokenjuice">Vincent Koc</a>
-</p>
+## Install
 
-Token Glace is a deterministic output compactor for terminal-heavy agent workflows: it runs noisy commands like `git status`, `pnpm test`, `docker build`, or `rg`, keeps the command semantics untouched, and returns a smaller payload built from rule-driven JSON reducers instead of dumping the whole wall of terminal text back into context. The reason is leverage: agent context is finite and expensive, so less transcript waste means fewer useless reruns and cleaner handoff between tools without making the shell magical. This repository is a fork of the upstream project that re-points its own project metadata (homepage, repository, issue tracker) at `escoffier-labs/token-glace` and tracks the build the Escoffier Labs agent fleet runs; the reducer engine, host integrations, and CLI surface are upstream's, used and extended under the MIT license.
+```bash
+# via Brigade
+brigade add tokens
 
-> Token Glace is a fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) by Vincent Koc, used and extended under the MIT license; we are also a contributor to the upstream project. The original project, its npm package, and its Homebrew tap remain Vincent's, while this fork publishes and documents the `token-glace` command. See [What this fork changes](#what-this-fork-changes).
+# or see release notes / package for the token-glace binary on your platform
+token-glace wrap -- seq 1 6000
+token-glace wrap --raw -- seq 1 6000   # full output when you need it
+```
 
-<p align="center">
-  <img src="docs/assets/token-glace-compaction.svg" alt="Recording: token-glace wrap compacts a 6000-line command to a head/tail summary with a neutral footer, and --raw returns the full output" width="820">
-  <br>
-  <em><code>token-glace wrap -- seq 1 6000</code> returns <code>... 5984 lines omitted ...</code> and reports <code>[tokenjuice] Output compacted to save tokens (28811 of 28893 characters omitted).</code></em>
-</p>
-
-Wrap any noisy command and Token Glace returns a compacted, deterministic payload with a neutral footer noting what was omitted. The raw bytes stay one `--raw` flag away.
+> Fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) (MIT). This repo publishes the `token-glace` command for the Escoffier fleet.
 
 ## What it does
 
-Token Glace sits between an agent or harness and the noisy tools it calls. The command still runs untouched; Token Glace observes the output after execution and returns a compacted, deterministic summary built from inspectable JSON reducers, so the language model gets a clean payload instead of token-burning terminal junk. It trims the fat from `git status`, `pnpm test`, `docker build`, `rg`, `pnpm --help`, and similar high-noise commands, while exact file-content reads stay raw and unsafe mixed command sequences are left alone. Raw output stays available only when you explicitly ask for it through `--raw` / `--full` or opt-in artifact storage, rules stay inspectable JSON instead of model vibes, and host integrations stay thin wrappers around the same core reducer instead of becoming one-off adapter logic.
+| | Job | What you get |
+|---|---|---|
+| **Wrap** | Sit between harness and shell | Command still runs; output is observed after |
+| **Reduce** | JSON rules, not model vibes | Deterministic compaction for git, test, build, rg noise |
+| **Keep raw** | One flag away | `--raw` / `--full` when you need the wall of text |
+| **Integrate** | Many clients, one core | Claude Code, Codex, Cursor, OpenClaw, and more |
+
+<p align="center">
+  <img src="docs/assets/token-glace-compaction.svg" alt="Recording: token-glace wrap compacts long output" width="760">
+</p>
+
+<p align="center"><em>Wrap a noisy command, get a head/tail summary, or pass --raw for the full stream.</em></p>
+
 
 ## Integrations
 
