@@ -38,6 +38,8 @@ token-glace wrap -- seq 1 6000
 token-glace wrap --raw -- seq 1 6000   # full output when you need it
 ```
 
+The root `station.json` publishes the bounded doctor, UTC statistics, and verification surfaces Brigade checks for this active token station.
+
 > Fork of [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) (MIT). This repo publishes the `token-glace` command for the Escoffier fleet.
 
 ## What it does

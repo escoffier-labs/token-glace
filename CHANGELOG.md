@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- Add an active Brigade station manifest for hook doctor JSON, bounded UTC statistics JSON, and the built-in verification command.
+
 ## 0.8.3 - 2026-07-01
 
 ### Changed
