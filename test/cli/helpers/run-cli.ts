@@ -129,7 +129,9 @@ async function runCliOnce(argv: string[], options: RunCliOptions = {}): Promise<
   } catch (error: unknown) {
     rejected = true;
     rejectionMessage = error instanceof Error ? error.message : String(error);
-  } finally {
+  }
+
+  {
     const { stdout, stderr } = stdio.getOutput();
     stdio.release();
     restoreStdinFn?.();
