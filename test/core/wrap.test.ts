@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { listArtifactMetadata, listArtifacts, runWrappedCommand } from "../../src/index.js";
-import { WRAP_AUTHORITATIVE_FOOTER } from "../../src/core/compaction-metadata.js";
+import { WRAP_COMPACTION_FOOTER_PREFIX } from "../../src/core/compaction-metadata.js";
 
 const tempDirs: string[] = [];
 
@@ -120,7 +120,7 @@ describe("runWrappedCommand", () => {
 
     expect(wrapped.result.inlineText).toBe("Deleted branch fix/cd-prefixed-raw-bypass-main (was 76b6858).");
     expect(wrapped.result.compaction?.authoritative).toBe(false);
-    expect(wrapped.result.inlineText).not.toContain(WRAP_AUTHORITATIVE_FOOTER);
+    expect(wrapped.result.inlineText).not.toContain(WRAP_COMPACTION_FOOTER_PREFIX);
   });
 
   it("does not keep authoritative compaction when passthrough beats a lossy summary", async () => {
@@ -132,7 +132,7 @@ describe("runWrappedCommand", () => {
 
     expect(wrapped.result.inlineText).toBe(Array.from({ length: 13 }, (_, index) => `v${index}`).join("\n"));
     expect(wrapped.result.compaction?.authoritative).toBe(false);
-    expect(wrapped.result.inlineText).not.toContain(WRAP_AUTHORITATIVE_FOOTER);
+    expect(wrapped.result.inlineText).not.toContain(WRAP_COMPACTION_FOOTER_PREFIX);
   });
 
   it("flags omitted summaries as authoritative compaction", async () => {
@@ -167,6 +167,6 @@ describe("runWrappedCommand", () => {
     expect(wrapped.result.inlineText).toContain("- echo step-29");
     expect(wrapped.result.inlineText).not.toContain("commands omitted");
     expect(wrapped.result.compaction?.authoritative).toBe(false);
-    expect(wrapped.result.inlineText).not.toContain(WRAP_AUTHORITATIVE_FOOTER);
+    expect(wrapped.result.inlineText).not.toContain(WRAP_COMPACTION_FOOTER_PREFIX);
   });
 });
