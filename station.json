@@ -1,0 +1,44 @@
+{
+  "schema": "brigade.station.v1",
+  "name": "token-glace",
+  "station": "tokens",
+  "summary": "output compaction and token-use summaries",
+  "lifecycle": "active",
+  "tools": [
+    {
+      "name": "token-glace",
+      "kind": "executable",
+      "command": "token-glace",
+      "summary": "output compaction through host hooks",
+      "install": [
+        "npm",
+        "install",
+        "-g",
+        "https://github.com/escoffier-labs/token-glace/releases/download/v0.8.3/token-glace-v0.8.3.tar.gz"
+      ],
+      "surfaces": [
+        {
+          "kind": "doctor-json",
+          "command": ["token-glace", "doctor", "hooks", "--format", "json"],
+          "read_only": true,
+          "timeout_seconds": 30
+        },
+        {
+          "kind": "summary-json",
+          "command": ["token-glace", "stats", "--format", "json", "--timezone", "utc"],
+          "read_only": true,
+          "timeout_seconds": 30,
+          "max_chars": 4000,
+          "probe": ["token-glace", "--help"],
+          "probe_contains": ["--format", "--timezone"]
+        },
+        {
+          "kind": "verify-exit",
+          "command": ["token-glace", "verify"],
+          "read_only": true,
+          "timeout_seconds": 60
+        }
+      ]
+    }
+  ]
+}
