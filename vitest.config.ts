@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    globalSetup: ["test/setup/global-artifacts.ts"],
+    globalSetup: ["test/setup/global-artifacts.ts", "test/setup/ensure-dist.ts"],
     include: ["test/**/*.test.ts"],
     env: {
       // Dogfooding machines export TOKENJUICE_NO_OMISSION=1 so their own agent
