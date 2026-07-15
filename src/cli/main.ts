@@ -167,12 +167,14 @@ type ParsedArgs = {
   wrapLauncher: string | undefined;
   trace: boolean;
   printInstructions: boolean;
+  preToolUse: boolean;
   positionals: string[];
   passthrough: string[];
 };
 
 const VERSION = packageJson.version;
 const DEFAULT_MAX_INPUT_BYTES = 16 * 1024 * 1024;
+const CLAUDE_CODE_MAX_INPUT_BYTES = 256 * 1024 * 1024;
 const compactNumberFormatter = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
@@ -216,7 +218,7 @@ function printUsage(): void {
       "  tokenjuice install builder",
       "  tokenjuice install charlie",
       "  tokenjuice install codex [--local]",
-      "  tokenjuice install claude-code [--local]",
+      "  tokenjuice install claude-code [--local] [--pre-tool-use]",
       "  tokenjuice install cline [--local]",
       "  tokenjuice install codeant",
       "  tokenjuice install codebuff",
@@ -390,7 +392,7 @@ function printUsage(): void {
       "  tokenjuice cat <artifact-id>",
       "  tokenjuice verify [--fixtures]",
       "  tokenjuice discover [file] [--source-command <cmd>] [--tool-name <name>] [--exit-code <n>] [--source <name>] [--by-source]",
-      "  tokenjuice doctor [file|hooks|adal|aether|aictl|ai-memory-protocol|aider|agent-layer|agentinit|agentlink|agentloom|agents-cli|agents-md|agentsge|agentsmesh|amazon-q|amp|antigravity|anywhere-agents|augment|avante|baz|bito|blackbox|blocks|clawdbot|bob|builder|charlie|codex|claude-code|cline|codeant|codebuff|codegen|coder-agents|coderabbit|codebuddy|command-code|continue|copilot-agent|crush|cursor|deepagents|devin|dot-agents|docker-agent|droid|eca|elyra|firebase-studio|forgecode|gemini-cli|gitlab-duo|goose|greptile|grok-build|grok-cli|gptme|jean2|jetbrains-ai|junie|jules|leanctl|kimi|kiro|kilo|localcode|mcp-agent|mini-swe-agent|swe-agent|stagewise|mistral-vibe|mux|novakit|knowns|ona|openhands|open-interpreter|openwebui|pi|pi-go|opencode|plandex|qodo|qoder|qwen-code|replit|roo|rovo|ruler|tabby|tabnine|trae|uipath|vscode-copilot|warp|windsurf|zed|zencoder|copilot-cli] [--local] [--print-instructions] [--source-command <cmd>] [--tool-name <name>] [--exit-code <n>]",
+      "  tokenjuice doctor [file|hooks|adal|aether|aictl|ai-memory-protocol|aider|agent-layer|agentinit|agentlink|agentloom|agents-cli|agents-md|agentsge|agentsmesh|amazon-q|amp|antigravity|anywhere-agents|augment|avante|baz|bito|blackbox|blocks|clawdbot|bob|builder|charlie|codex|claude-code|cline|codeant|codebuff|codegen|coder-agents|coderabbit|codebuddy|command-code|continue|copilot-agent|crush|cursor|deepagents|devin|dot-agents|docker-agent|droid|eca|elyra|firebase-studio|forgecode|gemini-cli|gitlab-duo|goose|greptile|grok-build|grok-cli|gptme|jean2|jetbrains-ai|junie|jules|leanctl|kimi|kiro|kilo|localcode|mcp-agent|mini-swe-agent|swe-agent|stagewise|mistral-vibe|mux|novakit|knowns|ona|openhands|open-interpreter|openwebui|pi|pi-go|opencode|plandex|qodo|qoder|qwen-code|replit|roo|rovo|ruler|tabby|tabnine|trae|uipath|vscode-copilot|warp|windsurf|zed|zencoder|copilot-cli] [--local] [--pre-tool-use] [--print-instructions] [--source-command <cmd>] [--tool-name <name>] [--exit-code <n>]",
       "  tokenjuice stats [--timezone local|utc|<iana-timezone>] [--source <name>] [--by-source]",
     ].join("\n"),
   );
@@ -423,6 +425,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let wrapLauncher: string | undefined;
   let trace = false;
   let printInstructions = false;
+  let preToolUse = false;
 
   let index = 1;
   while (index < argv.length) {
@@ -568,6 +571,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
         printInstructions = true;
         index += 1;
         break;
+      case "--pre-tool-use":
+        preToolUse = true;
+        index += 1;
+        break;
       default:
         throw new Error(`unknown flag: ${current}`);
     }
@@ -597,19 +604,21 @@ export function parseArgs(argv: string[]): ParsedArgs {
     wrapLauncher,
     trace,
     printInstructions,
+    preToolUse,
     positionals,
     passthrough,
   };
 }
 
 async function readStdin(maxBytes = DEFAULT_MAX_INPUT_BYTES): Promise<string> {
-  if (inputStdin.isTTY) {
+  const stdin = process.stdin;
+  if (stdin.isTTY) {
     return "";
   }
 
   const chunks: Buffer[] = [];
   let totalBytes = 0;
-  for await (const chunk of inputStdin) {
+  for await (const chunk of stdin) {
     const buffer = Buffer.from(chunk);
     totalBytes += buffer.length;
     if (totalBytes > maxBytes) {
@@ -1351,7 +1360,10 @@ async function runInstall(args: ParsedArgs): Promise<number> {
   }
 
   if (target === "claude-code") {
-    const result = await installClaudeCodeHook(undefined, { local: args.local });
+    const result = await installClaudeCodeHook(undefined, {
+      local: args.local,
+      mode: args.preToolUse ? "pre-tool-use" : "post-tool-use",
+    });
     if (args.format === "json") {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
@@ -1364,7 +1376,14 @@ async function runInstall(args: ParsedArgs): Promise<number> {
     if (result.backupPath) {
       details.push({ label: "Backup", value: result.backupPath });
     }
-    details.push({ label: "Verify", value: `tokenjuice doctor hooks${args.local ? " --local" : ""}` });
+    details.push({
+      label: "Verify",
+      value: [
+        "tokenjuice doctor claude-code",
+        ...(args.local ? ["--local"] : []),
+        ...(args.preToolUse ? ["--pre-tool-use"] : []),
+      ].join(" "),
+    });
     process.stdout.write(formatInstallSuccess("claude-code", "hook", details));
     return 0;
   }
@@ -6972,7 +6991,10 @@ async function runDoctor(args: ParsedArgs): Promise<number> {
   }
 
   if (args.positionals[0] === "claude-code") {
-    const report = await doctorClaudeCodeHook(undefined, { local: args.local });
+    const report = await doctorClaudeCodeHook(undefined, {
+      local: args.local,
+      mode: args.preToolUse ? "pre-tool-use" : "post-tool-use",
+    });
 
     if (args.format === "json") {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -7399,7 +7421,9 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     case "claude-code-pre-tool-use":
       return await runClaudeCodePreToolUseHook(await readStdin(args.maxInputBytes), args.wrapLauncher);
     case "claude-code-post-tool-use":
-      return await runClaudeCodePostToolUseHook(await readStdin(args.maxInputBytes));
+      return await runClaudeCodePostToolUseHook(
+        await readStdin(args.maxInputBytes ?? CLAUDE_CODE_MAX_INPUT_BYTES),
+      );
     case "cline-post-tool-use":
       return await runClinePostToolUseHook(await readStdin(args.maxInputBytes));
     case "codebuddy-pre-tool-use":

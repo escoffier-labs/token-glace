@@ -5,7 +5,7 @@
 tokenjuice supports hosts with different hook capabilities.
 
 - codex / pi integrations compact output after tool execution.
-- claude-code / cursor integrations compact by rewriting shell input before execution.
+- cursor compacts by rewriting shell input before execution. Claude Code uses output replacement by default and keeps input wrapping as an explicit opt-in.
 
 for cursor, tokenjuice installs a `preToolUse` shell hook and rewrites:
 

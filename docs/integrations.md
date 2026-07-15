@@ -8,7 +8,7 @@ supported integrations:
 
 | Logo | Client | Install | Hook file |
 | --- | --- | --- | --- |
-| <img width="48px" src="client-claude.jpg" alt="Claude" /> | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `tokenjuice install claude-code` | `~/.claude/settings.json` |
+| <img width="48px" src="client-claude.jpg" alt="Claude" /> | [Claude Code](claude-code-integration.md) | `tokenjuice install claude-code` | `~/.claude/settings.json` |
 | <img width="48px" src="client-codebuddy.png" alt="CodeBuddy" /> | [CodeBuddy](https://codebuddy.tencent.com/) | `tokenjuice install codebuddy` | `~/.codebuddy/settings.json` |
 | <img width="48px" src="client-openai.jpg" alt="Codex" /> | [Codex CLI](https://github.com/openai/codex) | `tokenjuice install codex` | `~/.codex/hooks.json` |
 | <img width="48px" src="client-cursor.jpg" alt="Cursor" /> | [Cursor](https://cursor.com/docs/hooks) | `tokenjuice install cursor` | `~/.cursor/hooks.json` |

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Features
+
+- Make Claude Code's non-mutating PostToolUse hook the default while retaining explicit PreToolUse command wrapping behind `--pre-tool-use`.
+
+### Fixes
+
+- Preserve Claude Code Bash response metadata and image-valued output, accept host-sized hook payloads, skip output requested through Token Glace or tokenjuice raw/full modes, and validate every managed Claude Code hook during doctor checks.
+
 ## 0.8.3 - 2026-07-01
 
 ### Changed

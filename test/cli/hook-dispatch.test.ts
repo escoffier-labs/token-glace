@@ -56,7 +56,7 @@ const CLAUDE_POST_PAYLOAD = JSON.stringify({
   hook_event_name: "PostToolUse",
   tool_name: "Bash",
   tool_input: { command: "echo hi" },
-  tool_response: "hi\n",
+  tool_response: { stdout: "hi\n", stderr: "", interrupted: false, isImage: false },
 });
 
 const CURSOR_PRE_PAYLOAD = JSON.stringify({
@@ -115,8 +115,7 @@ const EXPECTED_HOOK_OUTPUT: Record<string, { stdout: string; stderr: string }> =
   },
   "claude-code-post-tool-use": {
     stdout: "",
-    stderr:
-      "tokenjuice claude-code-post-tool-use is deprecated; run tokenjuice install claude-code to migrate to the Claude Code PreToolUse hook.\n",
+    stderr: "",
   },
   "cline-post-tool-use": {
     stdout: '{"cancel":false,"contextModification":"","errorMessage":""}\n',

@@ -86,35 +86,83 @@ async function captureStdout(run: () => Promise<number>): Promise<{ code: number
   }
 }
 
-async function captureStdio(run: () => Promise<number>): Promise<{ code: number; stdout: string; stderr: string }> {
-  let stdout = "";
-  let stderr = "";
-  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-  const originalStderrWrite = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((chunk: string | Uint8Array) => {
-    stdout += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    stderr += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  }) as typeof process.stderr.write;
-
-  try {
-    const code = await run();
-    return { code, stdout, stderr };
-  } finally {
-    process.stdout.write = originalStdoutWrite;
-    process.stderr.write = originalStderrWrite;
-  }
-}
-
 describe("installClaudeCodeHook", () => {
-  it("installs a single tokenjuice PreToolUse hook on an empty settings file", async () => {
+  it("installs a non-mutating PostToolUse hook by default", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const command = "git status --short";
+    process.env.TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS = "1";
+
+    await installClaudeCodeHook(settingsPath);
+    const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
+    };
+    const payload = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command },
+      tool_response: {
+        stdout: Array.from({ length: 80 }, (_, index) => ` M src/file-${index}.ts`).join("\n"),
+        stderr: "warning from git",
+        interrupted: false,
+        isImage: false,
+        backgroundTaskId: "task-123",
+        backgroundedByUser: true,
+        persistedOutputPath: "/tmp/claude-output.txt",
+        persistedOutputSize: 65536,
+      },
+    };
+
+    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(JSON.stringify(payload)));
+    const response = JSON.parse(output) as {
+      hookSpecificOutput?: {
+        hookEventName?: string;
+        updatedToolOutput?: {
+          stdout?: string;
+          stderr?: string;
+          interrupted?: boolean;
+          isImage?: boolean;
+          backgroundTaskId?: string;
+          backgroundedByUser?: boolean;
+          persistedOutputPath?: string;
+          persistedOutputSize?: number;
+        };
+      };
+    };
+
+    expect(code).toBe(0);
+    expect(parsed.hooks.PreToolUse).toBeUndefined();
+    expect(parsed.hooks.PostToolUse?.[0]?.matcher).toBe("Bash");
+    expect(parsed.hooks.PostToolUse?.[0]?.hooks[0]?.command).toContain("claude-code-post-tool-use");
+    expect(payload.tool_input.command).toBe(command);
+    const expectedStdout = [
+      ...Array.from({ length: 10 }, (_, index) => `M: src/file-${index}.ts`),
+      "... 66 lines omitted ...",
+      ...Array.from({ length: 4 }, (_, index) => `M: src/file-${index + 76}.ts`),
+    ].join("\n");
+    expect(response).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        updatedToolOutput: {
+          stdout: expectedStdout,
+          stderr: "warning from git",
+          interrupted: false,
+          isImage: false,
+          backgroundTaskId: "task-123",
+          backgroundedByUser: true,
+          persistedOutputPath: "/tmp/claude-output.txt",
+          persistedOutputSize: 65536,
+        },
+      },
+    });
+    expect(response.hookSpecificOutput?.updatedToolOutput?.stdout).not.toContain("src/file-40.ts");
+  });
+
+  it("installs PreToolUse wrapping only when explicitly requested", async () => {
     const home = await createTempDir();
     const settingsPath = join(home, "settings.json");
 
-    const result = await installClaudeCodeHook(settingsPath);
+    const result = await installClaudeCodeHook(settingsPath, { mode: "pre-tool-use" });
     const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as {
       hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; statusMessage?: string; timeout?: number }> }>>;
     };
@@ -201,8 +249,8 @@ describe("installClaudeCodeHook", () => {
       },
     });
     expect(parsed.hooks.SessionStart).toHaveLength(1);
-    expect(parsed.hooks.PostToolUse).toHaveLength(1);
-    expect(parsed.hooks.PreToolUse).toHaveLength(1);
+    expect(parsed.hooks.PostToolUse).toHaveLength(2);
+    expect(parsed.hooks.PreToolUse).toBeUndefined();
   });
 
   it("preserves non-command Claude Code hooks and extra handler fields", async () => {
@@ -258,12 +306,12 @@ describe("installClaudeCodeHook", () => {
       { type: "prompt", prompt: "session prompt" },
       { type: "http", url: "https://example.com/hooks" },
     ]);
-    expect(parsed.hooks.PostToolUse).toHaveLength(1);
+    expect(parsed.hooks.PostToolUse).toHaveLength(2);
     expect(parsed.hooks.PostToolUse[0]?.matcher).toBe("Edit");
     expect(parsed.hooks.PostToolUse[0]?.hooks).toEqual([{ type: "agent", prompt: "summarize the edit" }]);
-    expect(parsed.hooks.PreToolUse).toHaveLength(1);
-    expect(parsed.hooks.PreToolUse[0]?.matcher).toBe("Bash");
-    expect(parsed.hooks.PreToolUse[0]?.hooks[0]?.command).toContain("claude-code-pre-tool-use");
+    expect(parsed.hooks.PostToolUse[1]?.matcher).toBe("Bash");
+    expect(parsed.hooks.PostToolUse[1]?.hooks[0]?.command).toContain("claude-code-post-tool-use");
+    expect(parsed.hooks.PreToolUse).toBeUndefined();
   });
 
   it("prefers a stable tokenjuice launcher from PATH when installing the hook", async () => {
@@ -285,9 +333,9 @@ describe("installClaudeCodeHook", () => {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
 
-    const expectedCommand = `${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`;
+    const expectedCommand = `${launcherPath} claude-code-post-tool-use`;
     expect(result.command).toBe(expectedCommand);
-    expect(parsed.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe(expectedCommand);
+    expect(parsed.hooks.PostToolUse?.[0]?.hooks[0]?.command).toBe(expectedCommand);
   });
 
   it("can force local repo routing instead of the PATH launcher", async () => {
@@ -318,9 +366,9 @@ describe("installClaudeCodeHook", () => {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
 
-    const expectedCommand = `${localNodePath} ${resolve(localCliPath)} claude-code-pre-tool-use --wrap-launcher ${resolve(localCliPath)}`;
+    const expectedCommand = `${localNodePath} ${resolve(localCliPath)} claude-code-post-tool-use`;
     expect(result.command).toBe(expectedCommand);
-    expect(parsed.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe(expectedCommand);
+    expect(parsed.hooks.PostToolUse?.[0]?.hooks[0]?.command).toBe(expectedCommand);
   });
 
   it("is idempotent and replaces old tokenjuice entries", async () => {
@@ -331,17 +379,19 @@ describe("installClaudeCodeHook", () => {
       settingsPath,
       `${JSON.stringify({
         hooks: {
-          PostToolUse: [
+          PreToolUse: [
             {
               matcher: "Bash",
               hooks: [
                 {
                   type: "command",
-                  command: "tokenjuice claude-code-post-tool-use --old",
-                  statusMessage: "compacting bash output with tokenjuice",
+                  command: "tokenjuice claude-code-pre-tool-use --wrap-launcher tokenjuice",
+                  statusMessage: "wrapping bash through tokenjuice for compaction",
                 },
               ],
             },
+          ],
+          PostToolUse: [
             {
               matcher: "Read",
               hooks: [{ type: "command", command: "echo keep-read" }],
@@ -359,19 +409,19 @@ describe("installClaudeCodeHook", () => {
       hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; statusMessage?: string }> }>>;
     };
 
-    const tokenjuiceHooks = parsed.hooks.PreToolUse.filter((group) =>
-      group.hooks.some((hook) => hook.statusMessage === "wrapping bash through tokenjuice for compaction" || hook.command.includes("claude-code-pre-tool-use")),
+    const tokenjuiceHooks = parsed.hooks.PostToolUse.filter((group) =>
+      group.hooks.some((hook) => hook.statusMessage === "compacting bash output with tokenjuice" || hook.command.includes("claude-code-post-tool-use")),
     );
 
-    expect(parsed.hooks.PostToolUse).toHaveLength(1);
+    expect(parsed.hooks.PreToolUse).toBeUndefined();
+    expect(parsed.hooks.PostToolUse).toHaveLength(2);
     expect(parsed.hooks.PostToolUse[0]?.matcher).toBe("Read");
     expect(parsed.hooks.PostToolUse[0]?.hooks[0]?.command).toBe("echo keep-read");
-    expect(parsed.hooks.PreToolUse).toHaveLength(1);
     expect(tokenjuiceHooks).toHaveLength(1);
-    expect(tokenjuiceHooks[0]?.hooks[0]?.command).toContain("claude-code-pre-tool-use");
+    expect(tokenjuiceHooks[0]?.hooks[0]?.command).toContain("claude-code-post-tool-use");
   });
 
-  it("preserves other PostToolUse matchers while adding PreToolUse", async () => {
+  it("preserves other PostToolUse matchers while adding the default PostToolUse hook", async () => {
     const home = await createTempDir();
     const settingsPath = join(home, "settings.json");
 
@@ -395,9 +445,25 @@ describe("installClaudeCodeHook", () => {
       hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; statusMessage?: string }> }>>;
     };
 
-    expect(parsed.hooks.PostToolUse).toHaveLength(1);
+    expect(parsed.hooks.PostToolUse).toHaveLength(2);
     expect(parsed.hooks.PostToolUse[0]?.matcher).toBe("Write");
     expect(parsed.hooks.PostToolUse[0]?.hooks[0]?.command).toBe("echo keep-write");
+    expect(parsed.hooks.PostToolUse[1]?.matcher).toBe("Bash");
+    expect(parsed.hooks.PostToolUse[1]?.hooks[0]?.command).toContain("claude-code-post-tool-use");
+    expect(parsed.hooks.PreToolUse).toBeUndefined();
+  });
+
+  it("migrates the default PostToolUse hook to opt-in PreToolUse wrapping", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+
+    await installClaudeCodeHook(settingsPath);
+    await installClaudeCodeHook(settingsPath, { mode: "pre-tool-use" });
+    const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
+    };
+
+    expect(parsed.hooks.PostToolUse).toBeUndefined();
     expect(parsed.hooks.PreToolUse).toHaveLength(1);
     expect(parsed.hooks.PreToolUse[0]?.matcher).toBe("Bash");
     expect(parsed.hooks.PreToolUse[0]?.hooks[0]?.command).toContain("claude-code-pre-tool-use");
@@ -522,7 +588,7 @@ describe("doctorClaudeCodeHook", () => {
     const report = await doctorClaudeCodeHook(settingsPath);
 
     expect(report.status).toBe("ok");
-    expect(report.detectedCommand).toBe(`${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`);
+    expect(report.detectedCommand).toBe(`${launcherPath} claude-code-post-tool-use`);
     expect(report.issues).toEqual([]);
   });
 
@@ -553,7 +619,7 @@ describe("doctorClaudeCodeHook", () => {
     });
 
     expect(report.status).toBe("ok");
-    expect(report.expectedCommand).toBe(`${localNodePath} ${resolve(localCliPath)} claude-code-pre-tool-use --wrap-launcher ${resolve(localCliPath)}`);
+    expect(report.expectedCommand).toBe(`${localNodePath} ${resolve(localCliPath)} claude-code-post-tool-use`);
     expect(report.detectedCommand).toBe(report.expectedCommand);
     expect(report.fixCommand).toBe("tokenjuice install claude-code --local");
   });
@@ -563,7 +629,7 @@ describe("doctorClaudeCodeHook", () => {
     const settingsPath = join(home, "settings.json");
     const binDir = join(home, "bin");
     const launcherPath = join(binDir, "tokenjuice");
-    const staleCommand = `${process.execPath} /opt/homebrew/Cellar/tokenjuice/0.2.0/libexec/dist/cli/main.js claude-code-pre-tool-use --wrap-launcher /opt/homebrew/Cellar/tokenjuice/0.2.0/libexec/dist/cli/main.js`;
+    const staleCommand = `${process.execPath} /opt/homebrew/Cellar/tokenjuice/0.2.0/libexec/dist/cli/main.js claude-code-post-tool-use`;
 
     process.env.PATH = binDir;
     await mkdir(binDir, { recursive: true });
@@ -572,10 +638,10 @@ describe("doctorClaudeCodeHook", () => {
       settingsPath,
       `${JSON.stringify({
         hooks: {
-          PreToolUse: [
+          PostToolUse: [
             {
               matcher: "Bash",
-              hooks: [{ type: "command", command: staleCommand, statusMessage: "wrapping bash through tokenjuice for compaction", timeout: 10 }],
+              hooks: [{ type: "command", command: staleCommand, statusMessage: "compacting bash output with tokenjuice", timeout: 10 }],
             },
           ],
         },
@@ -605,10 +671,10 @@ describe("doctorClaudeCodeHook", () => {
       settingsPath,
       `${JSON.stringify({
         hooks: {
-          PreToolUse: [
+          PostToolUse: [
             {
               matcher: "Bash",
-              hooks: [{ type: "command", command: `${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`, statusMessage: "wrapping bash through tokenjuice for compaction" }],
+              hooks: [{ type: "command", command: `${launcherPath} claude-code-post-tool-use`, statusMessage: "compacting bash output with tokenjuice" }],
             },
           ],
         },
@@ -624,7 +690,40 @@ describe("doctorClaudeCodeHook", () => {
     );
   });
 
-  it("warns when only the legacy PostToolUse hook is installed", async () => {
+  it("warns when the legacy PreToolUse hook is installed in default mode", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(
+      settingsPath,
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash",
+              hooks: [{ type: "command", command: `${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`, statusMessage: "wrapping bash through tokenjuice for compaction", timeout: 10 }],
+            },
+          ],
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const report = await doctorClaudeCodeHook(settingsPath);
+
+    expect(report.status).toBe("warn");
+    expect(report.detectedCommand).toBe(`${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`);
+    expect(report.issues).toContain(
+      "Claude Code PreToolUse tokenjuice hook is installed; rerun tokenjuice install claude-code to migrate to non-mutating PostToolUse",
+    );
+  });
+
+  it("warns when both hook modes are active", async () => {
     const home = await createTempDir();
     const settingsPath = join(home, "settings.json");
     const binDir = join(home, "bin");
@@ -640,11 +739,17 @@ describe("doctorClaudeCodeHook", () => {
           PostToolUse: [
             {
               matcher: "Bash",
-              hooks: [{ type: "command", command: `${launcherPath} claude-code-post-tool-use`, statusMessage: "compacting bash output with tokenjuice" }],
+              hooks: [{ type: "command", command: `${launcherPath} claude-code-post-tool-use`, statusMessage: "compacting bash output with tokenjuice", timeout: 10 }],
+            },
+          ],
+          PreToolUse: [
+            {
+              matcher: "Bash",
+              hooks: [{ type: "command", command: `${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`, statusMessage: "wrapping bash through tokenjuice for compaction", timeout: 10 }],
             },
           ],
         },
-      }, null, 2)}\n`,
+      })}\n`,
       "utf8",
     );
 
@@ -653,8 +758,225 @@ describe("doctorClaudeCodeHook", () => {
     expect(report.status).toBe("warn");
     expect(report.detectedCommand).toBe(`${launcherPath} claude-code-post-tool-use`);
     expect(report.issues).toContain(
-      "legacy Claude Code PostToolUse tokenjuice hook is installed; rerun tokenjuice install claude-code to migrate to PreToolUse",
+      "an additional Claude Code PreToolUse tokenjuice hook is active; rerun tokenjuice install claude-code to remove command wrapping",
     );
+  });
+
+  it("reports a healthy explicit PreToolUse hook in opt-in mode", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await installClaudeCodeHook(settingsPath, { mode: "pre-tool-use" });
+
+    const report = await doctorClaudeCodeHook(settingsPath, { mode: "pre-tool-use" });
+
+    expect(report.status).toBe("ok");
+    expect(report.expectedCommand).toBe(`${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`);
+    expect(report.detectedCommand).toBe(report.expectedCommand);
+    expect(report.fixCommand).toBe("tokenjuice install claude-code --pre-tool-use");
+    expect(report.issues).toEqual([]);
+  });
+
+  it("reports an exact managed command under a non-Bash matcher as broken", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(settingsPath, `${JSON.stringify({
+      hooks: {
+        PostToolUse: [{
+          matcher: "Read",
+          hooks: [{
+            type: "command",
+            command: `${launcherPath} claude-code-post-tool-use`,
+            statusMessage: "compacting bash output with tokenjuice",
+            timeout: 10,
+          }],
+        }],
+      },
+    })}\n`, "utf8");
+
+    const report = await doctorClaudeCodeHook(settingsPath);
+
+    expect(report.status).toBe("broken");
+    expect(report.issues).toContain(
+      "configured Claude Code tokenjuice hook matcher is not Bash; run tokenjuice install claude-code to restore Bash output compaction",
+    );
+  });
+
+  it("reports non-command and malformed duplicates after a healthy opt-in hook", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+    const command = `${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath}`;
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(settingsPath, `${JSON.stringify({
+      hooks: {
+        PreToolUse: [{
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command,
+              statusMessage: "wrapping bash through tokenjuice for compaction",
+              timeout: 10,
+            },
+            {
+              type: "prompt",
+              command,
+              statusMessage: "wrapping bash through tokenjuice for compaction",
+              timeout: 10,
+            },
+            {
+              type: "command",
+              statusMessage: "wrapping bash through tokenjuice for compaction",
+              timeout: 10,
+            },
+          ],
+        }],
+      },
+    })}\n`, "utf8");
+
+    const report = await doctorClaudeCodeHook(settingsPath, { mode: "pre-tool-use" });
+
+    expect(report.status).toBe("broken");
+    expect(report.issues).toEqual(expect.arrayContaining([
+      "multiple Claude Code PreToolUse tokenjuice hooks are active; rerun tokenjuice install claude-code --pre-tool-use to keep only one",
+      "configured Claude Code tokenjuice hook type is not command; run tokenjuice install claude-code --pre-tool-use to restore Bash output compaction",
+      "configured Claude Code tokenjuice hook is missing its command",
+    ]));
+  });
+
+  it("reports a malformed managed hook even when an earlier hook is healthy", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(settingsPath, `${JSON.stringify({
+      hooks: {
+        PostToolUse: [{
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command: `${launcherPath} claude-code-post-tool-use`,
+              statusMessage: "compacting bash output with tokenjuice",
+              timeout: 10,
+            },
+            {
+              type: "command",
+              statusMessage: "compacting bash output with tokenjuice",
+              timeout: 10,
+            },
+          ],
+        }],
+      },
+    })}\n`, "utf8");
+
+    const report = await doctorClaudeCodeHook(settingsPath);
+
+    expect(report.status).toBe("broken");
+    expect(report.issues).toContain("configured Claude Code tokenjuice hook is missing its command");
+  });
+
+  it("validates duplicate same-mode hook commands and timeouts after a healthy hook", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(settingsPath, `${JSON.stringify({
+      hooks: {
+        PostToolUse: [{
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command: `${launcherPath} claude-code-post-tool-use`,
+              statusMessage: "compacting bash output with tokenjuice",
+              timeout: 10,
+            },
+            {
+              type: "command",
+              command: `${launcherPath} claude-code-post-tool-use --stale`,
+              statusMessage: "compacting bash output with tokenjuice",
+              timeout: 5,
+            },
+          ],
+        }],
+      },
+    })}\n`, "utf8");
+
+    const report = await doctorClaudeCodeHook(settingsPath);
+
+    expect(report.status).toBe("warn");
+    expect(report.issues).toEqual(expect.arrayContaining([
+      "multiple Claude Code PostToolUse tokenjuice hooks are active; rerun tokenjuice install claude-code to keep only one",
+      "configured Claude Code tokenjuice hook timeout is missing or stale; run tokenjuice install claude-code to add the 10s safety cap",
+      "configured Claude Code hook command does not match the current recommended command",
+    ]));
+  });
+
+  it("validates an unexpected-mode hook after a healthy expected-mode hook", async () => {
+    const home = await createTempDir();
+    const settingsPath = join(home, "settings.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(settingsPath, `${JSON.stringify({
+      hooks: {
+        PostToolUse: [{
+          matcher: "Bash",
+          hooks: [{
+            type: "command",
+            command: `${launcherPath} claude-code-post-tool-use`,
+            statusMessage: "compacting bash output with tokenjuice",
+            timeout: 10,
+          }],
+        }],
+        PreToolUse: [{
+          matcher: "Bash",
+          hooks: [{
+            type: "command",
+            command: `${launcherPath} claude-code-pre-tool-use --wrap-launcher ${launcherPath} --stale`,
+            statusMessage: "wrapping bash through tokenjuice for compaction",
+            timeout: 5,
+          }],
+        }],
+      },
+    })}\n`, "utf8");
+
+    const report = await doctorClaudeCodeHook(settingsPath);
+
+    expect(report.status).toBe("warn");
+    expect(report.issues).toEqual(expect.arrayContaining([
+      "an additional Claude Code PreToolUse tokenjuice hook is active; rerun tokenjuice install claude-code to remove command wrapping",
+      "configured Claude Code tokenjuice hook timeout is missing or stale; run tokenjuice install claude-code to add the 10s safety cap",
+      "configured Claude Code hook command does not match the current recommended command",
+    ]));
   });
 });
 
@@ -1007,12 +1329,88 @@ describe("resolveClaudeCodeMinReduceChars", () => {
     expect(output).toBe("");
   });
 
-  it("keeps the legacy PostToolUse subcommand as a no-op migration shim", async () => {
-    const { code, stdout, stderr } = await captureStdio(() => runClaudeCodePostToolUseHook("{}"));
+});
+
+describe("runClaudeCodePostToolUseHook", () => {
+  const noisyStdout = Array.from({ length: 80 }, (_, index) => ` M src/file-${index}.ts`).join("\n");
+
+  function payload(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "git status --short" },
+      tool_response: {
+        stdout: noisyStdout,
+        stderr: "",
+        interrupted: false,
+        isImage: false,
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    "token-glace wrap --raw -- pnpm test",
+    "token-glace wrap --full -- pnpm test",
+    "FOO=1 tokenjuice --raw -- pnpm test",
+    "env FOO=1 tokenjuice --full -- pnpm test",
+    "'/opt/Token Glace/bin/token-glace' wrap --raw -- pnpm test",
+  ])("does not recompact explicit bypass command %s", async (command) => {
+    process.env.TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS = "1";
+    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload({
+      tool_input: { command },
+    })));
 
     expect(code).toBe(0);
-    expect(stdout).toBe("");
-    expect(stderr).toContain("claude-code-post-tool-use is deprecated");
+    expect(output).toBe("");
+  });
+
+  it("leaves output below the Claude Code size gate unchanged", async () => {
+    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload({
+      tool_response: { stdout: " M src/index.ts", stderr: "", interrupted: false, isImage: false },
+    })));
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
+  });
+
+  it("leaves image-valued Bash output unchanged", async () => {
+    process.env.TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS = "1";
+    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(payload({
+      tool_input: { command: "python render.py" },
+      tool_response: {
+        stdout: Array.from({ length: 80 }, (_, index) => `image-data-${index}`).join("\n"),
+        stderr: "",
+        interrupted: false,
+        isImage: true,
+      },
+    })));
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
+  });
+
+  it.each([
+    ["malformed JSON", "not-json"],
+    ["null payload", "null"],
+    ["string payload", JSON.stringify("payload")],
+    ["number payload", "42"],
+    ["boolean payload", "true"],
+    ["empty payload", "{}"],
+    ["string tool response", payload({ tool_response: noisyStdout })],
+    ["missing required Bash response field", payload({
+      tool_response: { stdout: noisyStdout, stderr: "" },
+    })],
+    ["empty stdout", payload({
+      tool_response: { stdout: "", stderr: "warning", interrupted: false, isImage: false },
+    })],
+    ["non-Bash tool", payload({ tool_name: "Read" })],
+  ])("ignores %s", async (_label, rawPayload) => {
+    process.env.TOKENJUICE_CLAUDE_CODE_MIN_REDUCE_CHARS = "1";
+    const { code, output } = await captureStdout(() => runClaudeCodePostToolUseHook(rawPayload));
+
+    expect(code).toBe(0);
+    expect(output).toBe("");
   });
 });
 
@@ -1046,7 +1444,7 @@ describe("claude code config directory discovery", () => {
     expect(result.settingsPath).toBe(join(legacyHome, "settings.json"));
   });
 
-  it("writes the PreToolUse hook under CLAUDE_CONFIG_DIR when set", async () => {
+  it("writes the default PostToolUse hook under CLAUDE_CONFIG_DIR when set", async () => {
     const configDir = await createTempDir();
     const legacyHome = await createTempDir();
     process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -1057,7 +1455,7 @@ describe("claude code config directory discovery", () => {
     const settings = JSON.parse(await readFile(join(configDir, "settings.json"), "utf8")) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
-    expect(settings.hooks.PreToolUse?.[0]?.hooks[0]?.command).toContain("claude-code-pre-tool-use");
+    expect(settings.hooks.PostToolUse?.[0]?.hooks[0]?.command).toContain("claude-code-post-tool-use");
   });
 
   it("doctor reads settings.json from CLAUDE_CONFIG_DIR when no path is provided", async () => {
