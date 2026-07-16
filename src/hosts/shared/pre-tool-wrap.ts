@@ -17,7 +17,7 @@ import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
-import { stripLeadingCdPrefix, tokenizeCommand } from "../../core/command.js";
+import { stripLeadingCdPrefix, stripLeadingEnvAssignments, tokenizeCommand } from "../../core/command.js";
 
 import { isNodeExecutablePath, isTokenjuiceExecutablePath, shellQuote } from "./hook-command.js";
 
@@ -202,19 +202,20 @@ export function buildWrappedCommand(params: {
 }
 
 /**
- * Detect whether a command has already been wrapped by tokenjuice. Matches
- * three shapes:
+ * Detect whether a command has already been routed through Token Glace.
+ * Leading shell assignments and `env` options are ignored before matching
+ * the installed primary name or legacy alias:
  *
- *   `tokenjuice wrap ...`                     — bare executable on PATH
- *   `/abs/path/to/tokenjuice wrap ...`        — absolute launcher (pnpm link,
- *                                               homebrew, etc.)
- *   `node /some/dist/cli/main.js ... wrap`    — node-dispatched local build
+ *   `token-glace wrap ...`                    — primary executable on PATH
+ *   `/abs/path/to/tokenjuice wrap ...`        — legacy alias by absolute path
+ *   `FOO=1 tokenjuice --raw ...`              — explicit bypass with an assignment
+ *   `node /some/dist/cli/main.js wrap ...`    — node-dispatched local build
  *
  * Avoids double-wrapping when a tool call is already routed through tokenjuice
  * (e.g. the user invoked `tokenjuice wrap --raw -- <cmd>` explicitly).
  */
 export function commandAlreadyWrapped(command: string): boolean {
-  const argv = tokenizeCommand(stripLeadingCdPrefix(command));
+  const argv = stripLeadingEnvAssignments(tokenizeCommand(stripLeadingCdPrefix(command)));
   if (argv.length < 2) {
     return false;
   }
@@ -222,7 +223,9 @@ export function commandAlreadyWrapped(command: string): boolean {
   const first = argv[0];
   const second = argv[1];
 
-  if (typeof first === "string" && isTokenjuiceExecutablePath(first) && second === "wrap") {
+  const isBypassInvocation = (value: string | undefined): boolean => value === "wrap" || value === "--raw" || value === "--full";
+
+  if (typeof first === "string" && isTokenjuiceExecutablePath(first) && isBypassInvocation(second)) {
     return true;
   }
 
@@ -231,7 +234,7 @@ export function commandAlreadyWrapped(command: string): boolean {
     && isNodeExecutablePath(first)
     && typeof second === "string"
     && second.endsWith(".js")
-    && argv.slice(2).includes("wrap")
+    && isBypassInvocation(argv[2])
   ) {
     return true;
   }

@@ -2,6 +2,8 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
+import { compactBashResult } from "../../core/integrations/compact-bash-result.js";
+import { buildTokenjuiceHookCommand } from "../shared/host-command.js";
 import { extractHookCommandPaths } from "../shared/hook-command.js";
 import {
   buildWrapLauncherHookCommand,
@@ -32,15 +34,34 @@ type ClaudeCodePreToolUsePayload = {
   tool_input?: unknown;
 };
 
+type ClaudeCodePostToolUsePayload = {
+  hook_event_name?: unknown;
+  tool_name?: unknown;
+  cwd?: unknown;
+  tool_input?: {
+    command?: unknown;
+  };
+  tool_response?: unknown;
+};
+
 type ClaudeCodeBashToolInput = {
   command?: unknown;
   description?: unknown;
   shell?: unknown;
 } & Record<string, unknown>;
 
+type ClaudeCodeBashToolResponse = {
+  stdout: string;
+  stderr: string;
+  interrupted: boolean;
+  isImage?: boolean;
+} & Record<string, unknown>;
+
 type DetectedClaudeCodeHook = {
   hook: ClaudeCodeHook;
   hookEvent: ClaudeCodeHookEvent;
+  matcher: unknown;
+  handlerType: unknown;
 };
 
 export type InstallClaudeCodeHookResult = {
@@ -70,13 +91,15 @@ export type ClaudeCodeHookCommandOptions = {
   local?: boolean;
   binaryPath?: string;
   nodePath?: string;
+  mode?: ClaudeCodeHookMode;
 };
 
-const TOKENJUICE_CLAUDE_CODE_STATUS = "wrapping bash through tokenjuice for compaction";
-const TOKENJUICE_CLAUDE_CODE_LEGACY_STATUS = "compacting bash output with tokenjuice";
-const TOKENJUICE_CLAUDE_CODE_FIX_COMMAND = "tokenjuice install claude-code";
-const TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND = "claude-code-pre-tool-use";
-const TOKENJUICE_CLAUDE_CODE_LEGACY_HOOK_SUBCOMMAND = "claude-code-post-tool-use";
+export type ClaudeCodeHookMode = "post-tool-use" | "pre-tool-use";
+
+const TOKENJUICE_CLAUDE_CODE_POST_STATUS = "compacting bash output with tokenjuice";
+const TOKENJUICE_CLAUDE_CODE_PRE_STATUS = "wrapping bash through tokenjuice for compaction";
+const TOKENJUICE_CLAUDE_CODE_POST_SUBCOMMAND = "claude-code-post-tool-use";
+const TOKENJUICE_CLAUDE_CODE_PRE_SUBCOMMAND = "claude-code-pre-tool-use";
 const TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS = 10;
 // Claude Code has a large context window and truncates oversized Bash output on
 // its own, so it only benefits from compaction on genuinely large output.
@@ -97,25 +120,32 @@ function getDefaultSettingsPath(): string {
 }
 
 async function buildClaudeCodeHookCommand(options: ClaudeCodeHookCommandOptions = {}): Promise<string> {
-  return buildWrapLauncherHookCommand({
-    ...options,
-    subcommand: TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND,
-    hostName: "claude code",
-  });
+  if (options.mode === "pre-tool-use") {
+    return buildWrapLauncherHookCommand({
+      ...options,
+      subcommand: TOKENJUICE_CLAUDE_CODE_PRE_SUBCOMMAND,
+      hostName: "claude code",
+    });
+  }
+  return buildTokenjuiceHookCommand(TOKENJUICE_CLAUDE_CODE_POST_SUBCOMMAND, "claude code", options);
 }
 
-function getClaudeCodeFixCommand(local = false): string {
-  return local ? "tokenjuice install claude-code --local" : TOKENJUICE_CLAUDE_CODE_FIX_COMMAND;
+function getClaudeCodeFixCommand(options: ClaudeCodeHookCommandOptions): string {
+  return [
+    "tokenjuice install claude-code",
+    ...(options.local ? ["--local"] : []),
+    ...(options.mode === "pre-tool-use" ? ["--pre-tool-use"] : []),
+  ].join(" ");
 }
 
-function createTokenjuiceClaudeCodeHook(command: string): ClaudeCodeHookMatcherGroup {
+function createTokenjuiceClaudeCodeHook(command: string, mode: ClaudeCodeHookMode): ClaudeCodeHookMatcherGroup {
   return {
     matcher: "Bash",
     hooks: [
       {
         type: "command",
         command,
-        statusMessage: TOKENJUICE_CLAUDE_CODE_STATUS,
+        statusMessage: mode === "pre-tool-use" ? TOKENJUICE_CLAUDE_CODE_PRE_STATUS : TOKENJUICE_CLAUDE_CODE_POST_STATUS,
         timeout: TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS,
       },
     ],
@@ -126,52 +156,41 @@ function isTokenjuiceClaudeCodeHookEntry(hook: unknown): hook is ClaudeCodeHook 
   if (!isRecord(hook)) {
     return false;
   }
-  if (hook.statusMessage === TOKENJUICE_CLAUDE_CODE_STATUS || hook.statusMessage === TOKENJUICE_CLAUDE_CODE_LEGACY_STATUS) {
+  if (hook.statusMessage === TOKENJUICE_CLAUDE_CODE_POST_STATUS || hook.statusMessage === TOKENJUICE_CLAUDE_CODE_PRE_STATUS) {
     return true;
   }
   if (typeof hook.command !== "string") {
     return false;
   }
-  return hook.command.includes(TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND)
-    || hook.command.includes(TOKENJUICE_CLAUDE_CODE_LEGACY_HOOK_SUBCOMMAND);
+  return hook.command.includes(TOKENJUICE_CLAUDE_CODE_POST_SUBCOMMAND)
+    || hook.command.includes(TOKENJUICE_CLAUDE_CODE_PRE_SUBCOMMAND);
 }
 
-function isCurrentClaudeCodeHookEntry(hook: unknown): hook is ClaudeCodeHook {
-  return isRecord(hook) && (
-    hook.statusMessage === TOKENJUICE_CLAUDE_CODE_STATUS
-    || (typeof hook.command === "string" && hook.command.includes(TOKENJUICE_CLAUDE_CODE_HOOK_SUBCOMMAND))
-  );
-}
-
-function findTokenjuiceClaudeCodeHook(config: ClaudeCodeSettings): DetectedClaudeCodeHook | undefined {
-  const preToolUse = Array.isArray(config.hooks.PreToolUse) ? config.hooks.PreToolUse : [];
-  for (const group of preToolUse) {
-    if (!isRecord(group) || !Array.isArray(group.hooks)) {
-      continue;
-    }
-    const hook = group.hooks.find(isCurrentClaudeCodeHookEntry);
-    if (hook) {
-      return { hook, hookEvent: "PreToolUse" };
+function findTokenjuiceClaudeCodeHooks(
+  config: ClaudeCodeSettings,
+  preferredEvent: ClaudeCodeHookEvent,
+): DetectedClaudeCodeHook[] {
+  const events: ClaudeCodeHookEvent[] = preferredEvent === "PostToolUse"
+    ? ["PostToolUse", "PreToolUse"]
+    : ["PreToolUse", "PostToolUse"];
+  const detected: DetectedClaudeCodeHook[] = [];
+  for (const hookEvent of events) {
+    const groups = Array.isArray(config.hooks[hookEvent]) ? config.hooks[hookEvent] : [];
+    for (const group of groups) {
+      if (!isRecord(group) || !Array.isArray(group.hooks)) {
+        continue;
+      }
+      for (const hook of group.hooks.filter(isTokenjuiceClaudeCodeHookEntry)) {
+        detected.push({
+          hook,
+          hookEvent,
+          matcher: group.matcher,
+          handlerType: hook.type,
+        });
+      }
     }
   }
-
-  const postToolUse = Array.isArray(config.hooks.PostToolUse) ? config.hooks.PostToolUse : [];
-  for (const group of postToolUse) {
-    if (!isRecord(group) || !Array.isArray(group.hooks)) {
-      continue;
-    }
-    const hook = group.hooks.find(isTokenjuiceClaudeCodeHookEntry);
-    if (hook) {
-      return { hook, hookEvent: "PostToolUse" };
-    }
-  }
-
-  return undefined;
-}
-
-function findTokenjuiceClaudeCodeHookCommand(config: ClaudeCodeSettings): string | undefined {
-  const detected = findTokenjuiceClaudeCodeHook(config);
-  return typeof detected?.hook.command === "string" && detected.hook.command ? detected.hook.command : undefined;
+  return detected;
 }
 
 function sanitizeHooksSubtree(raw: unknown): Record<string, unknown> {
@@ -304,21 +323,24 @@ export async function installClaudeCodeHook(
   options: ClaudeCodeHookCommandOptions = {},
 ): Promise<InstallClaudeCodeHookResult> {
   const { config, backupPath } = await loadClaudeCodeSettings(settingsPath);
+  const mode = options.mode ?? "post-tool-use";
   const command = await buildClaudeCodeHookCommand(options);
 
-  if (Array.isArray(config.hooks.PostToolUse)) {
-    const prunedPost = pruneTokenjuiceHookEntries(config.hooks.PostToolUse);
-    if (prunedPost.length === 0) {
-      delete config.hooks.PostToolUse;
-    } else {
-      config.hooks.PostToolUse = prunedPost;
+  for (const event of ["PreToolUse", "PostToolUse"] as const) {
+    if (Array.isArray(config.hooks[event])) {
+      const pruned = pruneTokenjuiceHookEntries(config.hooks[event]);
+      if (pruned.length === 0) {
+        delete config.hooks[event];
+      } else {
+        config.hooks[event] = pruned;
+      }
     }
   }
 
-  const preToolUse = Array.isArray(config.hooks.PreToolUse) ? config.hooks.PreToolUse : [];
-  const retained = pruneTokenjuiceHookEntries(preToolUse);
-  retained.push(createTokenjuiceClaudeCodeHook(command));
-  config.hooks.PreToolUse = retained;
+  const event = mode === "pre-tool-use" ? "PreToolUse" : "PostToolUse";
+  const retained = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
+  retained.push(createTokenjuiceClaudeCodeHook(command, mode));
+  config.hooks[event] = retained;
 
   await mkdir(dirname(settingsPath), { recursive: true });
   const tempPath = `${settingsPath}.tmp`;
@@ -379,11 +401,22 @@ export async function doctorClaudeCodeHook(
   settingsPath = getDefaultSettingsPath(),
   options: ClaudeCodeHookCommandOptions = {},
 ): Promise<ClaudeCodeDoctorReport> {
-  const expectedCommand = await buildClaudeCodeHookCommand(options);
-  const fixCommand = getClaudeCodeFixCommand(options.local);
+  const expectedEvent = options.mode === "pre-tool-use" ? "PreToolUse" : "PostToolUse";
+  const [postToolUseCommand, preToolUseCommand] = await Promise.all([
+    buildClaudeCodeHookCommand({ ...options, mode: "post-tool-use" }),
+    buildClaudeCodeHookCommand({ ...options, mode: "pre-tool-use" }),
+  ]);
+  const expectedCommands: Record<ClaudeCodeHookEvent, string> = {
+    PostToolUse: postToolUseCommand,
+    PreToolUse: preToolUseCommand,
+  };
+  const expectedCommand = expectedCommands[expectedEvent];
+  const fixCommand = getClaudeCodeFixCommand(options);
   const { config, exists } = await readClaudeCodeSettings(settingsPath);
-  const detected = findTokenjuiceClaudeCodeHook(config);
-  const detectedCommand = findTokenjuiceClaudeCodeHookCommand(config);
+  const detectedHooks = findTokenjuiceClaudeCodeHooks(config, expectedEvent);
+  const detectedCommand = detectedHooks
+    .map(({ hook }) => typeof hook.command === "string" && hook.command.trim() ? hook.command : undefined)
+    .find((command): command is string => command !== undefined);
 
   if (!exists) {
     return {
@@ -397,7 +430,7 @@ export async function doctorClaudeCodeHook(
     };
   }
 
-  if (!detectedCommand || !detected) {
+  if (detectedHooks.length === 0) {
     return {
       settingsPath,
       status: "disabled",
@@ -409,40 +442,92 @@ export async function doctorClaudeCodeHook(
     };
   }
 
-  const checkedPaths = extractHookCommandPaths(detectedCommand);
-  const missingPaths: string[] = [];
-  for (const path of checkedPaths) {
-    if (!(await isExecutableFile(path)) && !(path.endsWith(".js") && await pathExists(path))) {
-      missingPaths.push(path);
+  const issues: string[] = [];
+  const addIssue = (issue: string): void => {
+    if (!issues.includes(issue)) {
+      issues.push(issue);
+    }
+  };
+  const expectedHooks = detectedHooks.filter(({ hookEvent }) => hookEvent === expectedEvent);
+  const unexpectedHooks = detectedHooks.filter(({ hookEvent }) => hookEvent !== expectedEvent);
+  if (unexpectedHooks.length > 0 && expectedHooks.length === 0) {
+    issues.push(expectedEvent === "PostToolUse"
+      ? "Claude Code PreToolUse tokenjuice hook is installed; rerun tokenjuice install claude-code to migrate to non-mutating PostToolUse"
+      : "Claude Code PostToolUse tokenjuice hook is installed; rerun tokenjuice install claude-code --pre-tool-use to opt in to PreToolUse wrapping");
+  } else if (unexpectedHooks.length > 0) {
+    issues.push(expectedEvent === "PostToolUse"
+      ? "an additional Claude Code PreToolUse tokenjuice hook is active; rerun tokenjuice install claude-code to remove command wrapping"
+      : "an additional Claude Code PostToolUse tokenjuice hook is active; rerun tokenjuice install claude-code --pre-tool-use to keep only PreToolUse wrapping");
+  }
+
+  for (const hookEvent of ["PostToolUse", "PreToolUse"] as const) {
+    if (detectedHooks.filter((entry) => entry.hookEvent === hookEvent).length > 1) {
+      addIssue(`multiple Claude Code ${hookEvent} tokenjuice hooks are active; rerun ${fixCommand} to keep only one`);
     }
   }
 
-  const issues: string[] = [];
-  if (detected.hookEvent !== "PreToolUse") {
-    issues.push("legacy Claude Code PostToolUse tokenjuice hook is installed; rerun tokenjuice install claude-code to migrate to PreToolUse");
-  } else if (detected.hook.timeout !== TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS) {
-    issues.push(
-      `configured Claude Code tokenjuice hook timeout is missing or stale; run ${fixCommand} to add the ${TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS}s safety cap`,
-    );
-  }
-  if (detectedCommand !== expectedCommand) {
-    if (detectedCommand.includes("/Cellar/")) {
-      issues.push("configured Claude Code hook is pinned to a versioned Homebrew Cellar path");
-    } else {
-      issues.push("configured Claude Code hook command does not match the current recommended command");
+  const checkedPathSet = new Set<string>();
+  const missingPathSet = new Set<string>();
+  let malformedCommand = false;
+  let malformedHookStructure = false;
+  for (const { hook, hookEvent, matcher, handlerType } of detectedHooks) {
+    if (matcher !== "Bash") {
+      malformedHookStructure = true;
+      addIssue(
+        `configured Claude Code tokenjuice hook matcher is not Bash; run ${fixCommand} to restore Bash output compaction`,
+      );
+    }
+    if (handlerType !== "command") {
+      malformedHookStructure = true;
+      addIssue(
+        `configured Claude Code tokenjuice hook type is not command; run ${fixCommand} to restore Bash output compaction`,
+      );
+    }
+
+    const command = typeof hook.command === "string" && hook.command.trim() ? hook.command : undefined;
+    if (!command) {
+      malformedCommand = true;
+      addIssue("configured Claude Code tokenjuice hook is missing its command");
+      continue;
+    }
+
+    const commandPaths = extractHookCommandPaths(command);
+    for (const path of commandPaths) {
+      checkedPathSet.add(path);
+      if (!(await isExecutableFile(path)) && !(path.endsWith(".js") && await pathExists(path))) {
+        missingPathSet.add(path);
+      }
+    }
+
+    if (hook.timeout !== TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS) {
+      addIssue(
+        `configured Claude Code tokenjuice hook timeout is missing or stale; run ${fixCommand} to add the ${TOKENJUICE_CLAUDE_CODE_HOOK_TIMEOUT_SECONDS}s safety cap`,
+      );
+    }
+    if (command !== expectedCommands[hookEvent]) {
+      if (command.includes("/Cellar/")) {
+        addIssue("configured Claude Code hook is pinned to a versioned Homebrew Cellar path");
+      } else {
+        addIssue("configured Claude Code hook command does not match the current recommended command");
+      }
     }
   }
+
+  const checkedPaths = [...checkedPathSet];
+  const missingPaths = [...missingPathSet];
   if (missingPaths.length > 0) {
-    issues.push(`configured Claude Code hook points at missing path${missingPaths.length === 1 ? "" : "s"}`);
+    addIssue(`configured Claude Code hook points at missing path${missingPaths.length === 1 ? "" : "s"}`);
   }
 
   return {
     settingsPath,
-    status: missingPaths.length > 0 ? "broken" : issues.length > 0 ? "warn" : "ok",
+    status: malformedCommand || malformedHookStructure || missingPaths.length > 0
+      ? "broken"
+      : issues.length > 0 ? "warn" : "ok",
     issues,
     fixCommand,
     expectedCommand,
-    detectedCommand,
+    ...(detectedCommand ? { detectedCommand } : {}),
     checkedPaths,
     missingPaths,
   };
@@ -497,9 +582,78 @@ export async function runClaudeCodePreToolUseHook(rawText: string, wrapLauncher 
   return 0;
 }
 
-export async function runClaudeCodePostToolUseHook(_rawText: string): Promise<number> {
-  process.stderr.write(
-    "tokenjuice claude-code-post-tool-use is deprecated; run tokenjuice install claude-code to migrate to the Claude Code PreToolUse hook.\n",
-  );
+function parseBashToolResponse(value: unknown): ClaudeCodeBashToolResponse | undefined {
+  if (
+    !isRecord(value)
+    || typeof value.stdout !== "string"
+    || typeof value.stderr !== "string"
+    || typeof value.interrupted !== "boolean"
+    || (value.isImage !== undefined && typeof value.isImage !== "boolean")
+  ) {
+    return undefined;
+  }
+  return value as ClaudeCodeBashToolResponse;
+}
+
+export async function runClaudeCodePostToolUseHook(rawText: string): Promise<number> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText) as unknown;
+  } catch {
+    return 0;
+  }
+  if (!isRecord(parsed)) {
+    return 0;
+  }
+  const payload = parsed as ClaudeCodePostToolUsePayload;
+
+  const command = payload.tool_input?.command;
+  if (
+    payload.hook_event_name !== "PostToolUse"
+    || payload.tool_name !== "Bash"
+    || typeof command !== "string"
+    || !command.trim()
+    || commandAlreadyWrapped(command)
+  ) {
+    return 0;
+  }
+
+  const toolResponse = parseBashToolResponse(payload.tool_response);
+  if (
+    !toolResponse
+    || toolResponse.isImage === true
+    || !toolResponse.stdout.trim()
+    || toolResponse.stdout.length <= resolveClaudeCodeMinReduceChars()
+  ) {
+    return 0;
+  }
+
+  try {
+    const outcome = await compactBashResult({
+      source: "claude-code",
+      command,
+      visibleText: toolResponse.stdout,
+      ...(typeof payload.cwd === "string" && payload.cwd.trim() ? { cwd: payload.cwd } : {}),
+      inspectionPolicy: "allow-safe-inventory",
+      metadata: { source: "claude-code-post-tool-use" },
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    if (outcome.action === "rewrite") {
+      process.stdout.write(`${JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          updatedToolOutput: {
+            ...toolResponse,
+            stdout: outcome.result.inlineText,
+          },
+        },
+      })}\n`);
+    }
+  } catch {
+    return 0;
+  }
   return 0;
 }

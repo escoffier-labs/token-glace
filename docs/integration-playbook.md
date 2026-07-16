@@ -39,6 +39,7 @@ for a new host adapter in `src/hosts/<host>/index.ts`:
   - parse hook payload defensively
   - skip non-target tools/events early
   - preserve explicit raw bypass behavior
+  - match the host's documented structured output schema when replacing a tool result
   - never throw hard on hook input parse failures
 
 then wire CLI + exports:

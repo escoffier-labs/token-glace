@@ -307,6 +307,7 @@ export type {
 export type {
   ClaudeCodeDoctorReport,
   ClaudeCodeHookCommandOptions,
+  ClaudeCodeHookMode,
   InstallClaudeCodeHookResult,
   UninstallClaudeCodeHookResult,
 } from "./hosts/claude-code/index.js";

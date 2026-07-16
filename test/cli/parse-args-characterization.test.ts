@@ -33,6 +33,11 @@ describe("parseArgs characterization", () => {
     expect(parseArgs(["verify", "--fixtures"]).fixtures).toBe(true);
   });
 
+  it("parses the explicit Claude Code PreToolUse opt-in", () => {
+    expect(parseArgs(["install", "claude-code", "--pre-tool-use"]).preToolUse).toBe(true);
+    expect(parseArgs(["install", "claude-code"]).preToolUse).toBe(false);
+  });
+
   it("parses --full as raw output", () => {
     expect(parseArgs(["wrap", "--full", "--", "echo"]).raw).toBe(true);
   });
