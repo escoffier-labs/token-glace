@@ -23,7 +23,7 @@ export const NO_COMPACTION_METADATA: CompactionMetadata = {
   kinds: [],
 };
 
-export const WRAP_AUTHORITATIVE_FOOTER = "[tokenjuice] This is the complete, authoritative output for this command. It was deterministically compacted to remove low-signal noise. Do not re-run the command, vary flags, or switch tools to try to recover omitted content; use a raw-artifact recovery command below when one is provided. Proceed with the task using this output.";
+export const WRAP_OMISSION_FOOTER = "[tokenjuice] Output was compacted. Content was omitted.";
 
 function buildCompactionMetadata(authoritative: boolean, ...kinds: CompactionKind[]): CompactionMetadata {
   if (kinds.length === 0) {

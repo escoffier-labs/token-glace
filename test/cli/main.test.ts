@@ -1,12 +1,13 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { WRAP_AUTHORITATIVE_FOOTER } from "../../src/core/compaction-metadata.js";
+import { WRAP_OMISSION_FOOTER } from "../../src/core/compaction-metadata.js";
 import { decorateWrapInlineText, formatStatsSources, isDirectModuleEntrypoint, parseArgs, resolveNoOmit } from "../../src/cli/main.js";
+import { runWrappedCommand } from "../../src/core/wrap.js";
 import { statsArtifacts } from "../../src/core/analysis.js";
 import type { StatsSourceReport } from "../../src/core/analysis.js";
 import type { CompactResult } from "../../src/types.js";
@@ -206,7 +207,33 @@ describe("formatStatsSources", () => {
 });
 
 describe("decorateWrapInlineText", () => {
-  it("keeps the authoritative footer for lossy summaries", () => {
+  // CLI decoration owns recovery guidance. Unique middle evidence is absent from the view,
+  // so a summary-only unit fixture cannot prove that the advertised recovery works.
+  it.each([false, true])("recovers omitted evidence safely (store=%s)", async (store) => {
+    const storeDir = await createTempDir();
+    const wrapped = await runWrappedCommand([
+      process.execPath, "-e",
+      "const fs = require('node:fs'); fs.writeFileSync(1, Array.from({length: 3000}, (_, i) => `unique synthetic record ${i}: expected evidence ${i}`).join('\\n')); fs.writeFileSync(2, 'diagnostic: synthetic failure\\n'); process.exit(7);",
+    ], { store, storeDir, recordStats: false, maxInlineChars: 200 });
+    const text = decorateWrapInlineText(wrapped.result, false);
+    expect(wrapped.result.inlineText).not.toContain("record 1500:");
+    expect(text).toContain("omitted");
+    expect(text).not.toMatch(/complete, authoritative|do not re-run|vary flags|switch tools|proceed with the task/iu);
+    expect(wrapped.exitCode).toBe(7);
+    expect(wrapped.stderr).toContain("diagnostic: synthetic failure");
+    expect(text).toContain("diagnostic: synthetic failure");
+    expect(decorateWrapInlineText(wrapped.result, true)).toBe(wrapped.result.inlineText);
+    expect(text).toMatch(store ? /tokenjuice cat tj_[0-9a-f-]+/u : /tokenjuice wrap --raw -- <command>/u);
+    expect(text).not.toMatch(store ? /No raw artifact/u : /tokenjuice cat/u);
+    expect(store ? text.includes("same --store-dir") : text.includes("side effects")).toBe(true);
+    expect(text.includes("original working directory")).toBe(store);
+    expect(Boolean(wrapped.result.rawRef)).toBe(store);
+    const recovered = wrapped.result.rawRef ? await readFile(wrapped.result.rawRef.path, "utf8") : undefined;
+    expect(recovered?.includes("record 1500: expected evidence 1500")).toBe(store ? true : undefined);
+    expect(recovered?.includes("diagnostic: synthetic failure")).toBe(store ? true : undefined);
+  });
+
+  it("reports omission for lossy summaries", () => {
     const result: CompactResult = {
       inlineText: "summary",
       compaction: {
@@ -225,7 +252,7 @@ describe("decorateWrapInlineText", () => {
       },
     };
 
-    expect(decorateWrapInlineText(result, false)).toContain(WRAP_AUTHORITATIVE_FOOTER);
+    expect(decorateWrapInlineText(result, false)).toContain(WRAP_OMISSION_FOOTER);
   });
 
   it("provides the raw-artifact recovery command when output is stored", () => {
@@ -255,7 +282,7 @@ describe("decorateWrapInlineText", () => {
     expect(decorateWrapInlineText(result, false)).toContain("tokenjuice cat tj_0123456789ab");
   });
 
-  it("suppresses the authoritative footer for lossless rewrites", () => {
+  it("omits the footer for lossless rewrites", () => {
     const result: CompactResult = {
       inlineText: "summary",
       compaction: {

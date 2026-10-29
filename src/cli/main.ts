@@ -13,7 +13,7 @@ import type { StatsSourceReport } from "../core/analysis.js";
 import { verifyBuiltinFixtures } from "../core/fixtures.js";
 import { readNoOmissionFromEnv } from "../core/env.js";
 import { parseReduceJsonRequest } from "../core/json-protocol.js";
-import { WRAP_AUTHORITATIVE_FOOTER } from "../core/compaction-metadata.js";
+import { WRAP_OMISSION_FOOTER } from "../core/compaction-metadata.js";
 import { reduceExecution } from "../core/reduce.js";
 import { verifyRules } from "../core/rules.js";
 import { UNKNOWN_ARTIFACT_SOURCE } from "../core/source.js";
@@ -664,8 +664,10 @@ export function decorateWrapInlineText(result: WrapResult["result"], raw: boolea
   const footer = [
     "",
     "---",
-    WRAP_AUTHORITATIVE_FOOTER,
-    ...(result.rawRef?.id ? [`Raw output is available locally: tokenjuice cat ${result.rawRef.id}`] : []),
+    WRAP_OMISSION_FOOTER,
+    ...(result.rawRef?.id
+      ? [`Stored raw output: tokenjuice cat ${result.rawRef.id}`, "Use the same --store-dir or TOKENJUICE_ARTIFACT_DIR setting as the original command for recovery. For relative paths, use the original working directory."]
+      : ["No raw artifact was stored. To recover output, consider tokenjuice wrap --raw -- <command> with the original command. Rerunning executes the command again and may repeat side effects. Assess whether it is safe first."]),
   ].join("\n");
   return `${result.inlineText}${footer}`;
 }

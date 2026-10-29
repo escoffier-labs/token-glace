@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- Report omitted command output with recovery guidance instead of treating compacted output as complete or discouraging recovery.
+
 ### Breaking changes
 
 - Require Node.js 22 or newer (`engines.node` is now `>=22`). Node.js 20 reached end of life in April 2026.
