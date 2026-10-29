@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- Avoid double wrapping existing `token-glace wrap` commands in shared pre-tool hooks.
+
 ### Breaking changes
 
 - Require Node.js 22 or newer (`engines.node` is now `>=22`). Node.js 20 reached end of life in April 2026.

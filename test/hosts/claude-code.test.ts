@@ -968,7 +968,7 @@ describe("runClaudeCodePreToolUseHook", () => {
     expect(output).toBe("");
   });
 
-  it("skips commands that are already wrapped", async () => {
+  it.each(["tokenjuice", "token-glace"])("skips commands already wrapped by %s", async (launcher) => {
     const home = await createTempDir();
     const shellPath = join(home, "bash");
     process.env.TOKENJUICE_CLAUDE_CODE_SHELL = shellPath;
@@ -978,7 +978,7 @@ describe("runClaudeCodePreToolUseHook", () => {
       hook_event_name: "PreToolUse",
       tool_name: "Bash",
       tool_input: {
-        command: "tokenjuice wrap --raw -- bash -lc 'git show HEAD --stat'",
+        command: `${launcher} wrap --raw -- bash -lc 'git show HEAD --stat'`,
       },
     });
 

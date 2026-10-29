@@ -342,6 +342,43 @@ describe("buildWrappedCommand", () => {
 });
 
 describe("commandAlreadyWrapped", () => {
+  describe.each(["tokenjuice", "token-glace"])("%s executable forms", (launcher) => {
+    it.each([
+      "%s wrap -- git status",
+      "/usr/local/bin/%s wrap --raw -- git status",
+      "'/opt/CLI Tools/%s' wrap --full -- git status",
+      '"/opt/CLI Tools/%s" wrap -- /bin/bash -lc \'git status\'',
+      "cd /repo && %s wrap -- /bin/bash -lc 'git status'",
+      "cd '/repo with spaces' && %s wrap --raw -- /bin/sh -c 'bash -lc \"git status\"'",
+      String.raw`'C:\Program Files\%s.exe' wrap -- git status`,
+      String.raw`"C:\Program Files\%s.cmd" wrap --full -- git status`,
+      "C:/Tools/%s.bat wrap -- git status",
+    ])("recognizes %s", (template) => {
+      expect(commandAlreadyWrapped(template.replace("%s", launcher))).toBe(true);
+    });
+
+    it.each([
+      "echo %s wrap -- git status",
+      "printf '%s wrap -- git status'",
+      "my-%s wrap -- git status",
+      "%s-helper wrap -- git status",
+      "/opt/%s/other wrap -- git status",
+      "%s.js wrap -- git status",
+      "%s status",
+    ])("does not mistake %s for a wrapper", (template) => {
+      expect(commandAlreadyWrapped(template.replace("%s", launcher))).toBe(false);
+    });
+
+    it("recognizes a generated shell wrapper", () => {
+      const wrapped = buildWrappedCommand({
+        wrapLauncher: `/opt/CLI Tools/${launcher}`,
+        shellPath: "/bin/bash",
+        command: "sh -c 'git status'",
+      });
+      expect(commandAlreadyWrapped(wrapped)).toBe(true);
+    });
+  });
+
   it.each([
     ["tokenjuice wrap -- git status", true, "bare tokenjuice"],
     ["/usr/local/bin/tokenjuice wrap -- git status", true, "absolute POSIX path"],
