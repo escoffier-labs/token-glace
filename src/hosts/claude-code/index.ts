@@ -1,10 +1,11 @@
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { compactBashResult } from "../../core/integrations/compact-bash-result.js";
 import { buildTokenjuiceHookCommand } from "../shared/host-command.js";
 import { extractHookCommandPaths } from "../shared/hook-command.js";
+import { readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
 import {
   buildWrapLauncherHookCommand,
   buildWrappedCommand,
@@ -208,22 +209,6 @@ function sanitizeClaudeCodeSettings(raw: unknown): ClaudeCodeSettings {
   };
 }
 
-async function loadClaudeCodeSettings(settingsPath: string): Promise<{ config: ClaudeCodeSettings; backupPath?: string }> {
-  try {
-    const rawText = await readFile(settingsPath, "utf8");
-    const parsed = JSON.parse(rawText) as unknown;
-    const config = sanitizeClaudeCodeSettings(parsed);
-    const backupPath = `${settingsPath}.bak`;
-    await writeFile(backupPath, rawText, "utf8");
-    return { config, backupPath };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { config: { hooks: {} } };
-    }
-    throw new Error(`failed to load claude code settings from ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
 async function readClaudeCodeSettings(settingsPath: string): Promise<{ config: ClaudeCodeSettings; exists: boolean }> {
   try {
     const rawText = await readFile(settingsPath, "utf8");
@@ -240,20 +225,6 @@ async function readClaudeCodeSettings(settingsPath: string): Promise<{ config: C
       };
     }
     throw new Error(`failed to read claude code settings from ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-async function chooseBackupPath(filePath: string): Promise<string> {
-  for (let index = 0; ; index += 1) {
-    const candidate = index === 0 ? `${filePath}.bak` : `${filePath}.bak.${index}`;
-    try {
-      await access(candidate);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return candidate;
-      }
-      throw error;
-    }
   }
 }
 
@@ -322,7 +293,8 @@ export async function installClaudeCodeHook(
   settingsPath = getDefaultSettingsPath(),
   options: ClaudeCodeHookCommandOptions = {},
 ): Promise<InstallClaudeCodeHookResult> {
-  const { config, backupPath } = await loadClaudeCodeSettings(settingsPath);
+  const settings = await readSettingsFile(settingsPath);
+  const config = sanitizeClaudeCodeSettings(settings.data ? JSON.parse(settings.data.toString("utf8")) as unknown : undefined);
   const mode = options.mode ?? "post-tool-use";
   const command = await buildClaudeCodeHookCommand(options);
 
@@ -342,10 +314,7 @@ export async function installClaudeCodeHook(
   retained.push(createTokenjuiceClaudeCodeHook(command, mode));
   config.hooks[event] = retained;
 
-  await mkdir(dirname(settingsPath), { recursive: true });
-  const tempPath = `${settingsPath}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  await rename(tempPath, settingsPath);
+  const backupPath = await writeSettingsFile(settings, `${JSON.stringify(config, null, 2)}\n`, "replace");
 
   return {
     settingsPath,
@@ -357,24 +326,11 @@ export async function installClaudeCodeHook(
 export async function uninstallClaudeCodeHook(
   settingsPath = getDefaultSettingsPath(),
 ): Promise<UninstallClaudeCodeHookResult> {
-  let rawText: string;
-  try {
-    rawText = await readFile(settingsPath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { settingsPath, removed: false };
-    }
-    throw new Error(`failed to read claude code settings from ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
+  const settings = await readSettingsFile(settingsPath);
+  if (!settings.data) {
+    return { settingsPath, removed: false };
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawText) as unknown;
-  } catch (error) {
-    throw new Error(`failed to read claude code settings from ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  const config = sanitizeClaudeCodeSettings(parsed);
+  const config = sanitizeClaudeCodeSettings(JSON.parse(settings.data.toString("utf8")) as unknown);
   const removedPreToolUse = removeTokenjuiceHookEvent(config, "PreToolUse");
   const removedPostToolUse = removeTokenjuiceHookEvent(config, "PostToolUse");
   const removed = removedPreToolUse || removedPostToolUse;
@@ -383,16 +339,11 @@ export async function uninstallClaudeCodeHook(
     return { settingsPath, removed: false };
   }
 
-  const backupPath = await chooseBackupPath(settingsPath);
-  await writeFile(backupPath, rawText, "utf8");
-  await mkdir(dirname(settingsPath), { recursive: true });
-  const tempPath = `${settingsPath}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  await rename(tempPath, settingsPath);
+  const backupPath = await writeSettingsFile(settings, `${JSON.stringify(config, null, 2)}\n`, "preserve");
 
   return {
     settingsPath,
-    backupPath,
+    ...(backupPath ? { backupPath } : {}),
     removed: true,
   };
 }

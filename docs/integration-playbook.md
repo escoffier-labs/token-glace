@@ -44,16 +44,29 @@ for a new host adapter in `src/hosts/<host>/index.ts`:
 
 then wire CLI + exports:
 
+- `src/cli/install-commands.ts`, `src/cli/uninstall-commands.ts`, `src/cli/doctor-commands.ts`
+  - add a handler for `install <host>`, `uninstall <host>`, and `doctor <host>`
+  - register it (and any alias) in `installCommands`, `uninstallCommands`, and `doctorCommands`
 - `src/cli/main.ts`
-  - `install <host>`
-  - `doctor <host>`
+  - the "currently supports" host lists in `runInstall` / `runUninstall`
   - usage text
   - runtime hook entry command if needed
+- `test/cli/host-commands.test.ts`
+  - add the host (and aliases) to `HOST_TARGETS` and record its transcript with `pnpm exec vitest run test/cli/host-commands.test.ts -u`
 - `src/index.ts`
   - runtime/install/doctor exports
   - result/report type exports
 - `src/hosts/shared/hook-doctor.ts`
   - add the host to aggregate doctor report
+
+### symlinked settings
+
+Claude Code, CodeBuddy, and Droid update the resolved settings file while preserving
+its symlink and permissions. Broken links must have their target restored before
+installing. The writer checks for changed contents or a retargeted link before
+replacing the file and asks you to retry when it detects another edit. Avoid editing
+settings concurrently with install or uninstall: portable filesystem rename cannot
+make that check and replacement atomic against another writer.
 
 ## test strategy (required)
 
@@ -82,6 +95,22 @@ new adapters often fail CI/local due to leaked machine config. isolate host home
 copilot-cli and vscode-copilot both read every `*.json` under `~/.copilot/hooks/`. install each host under a per-host filename (`tokenjuice-cli.json` and `tokenjuice-vscode.json`) so neither host's install overwrites the other. doctor for both hosts scans sibling files and reports stray tokenjuice entries.
 
 if you add a new host to aggregate doctor logic, existing aggregate tests may start failing unless they set that host's env home to temp storage.
+
+### shared Codex hooks renderer
+
+when `codex-hooks` is executable on `PATH`, the Codex installer registers the
+top-level `{"hooks": ...}` fragment as `tokenjuice.post-tool-use` and leaves the
+effective `hooks.json` write to that renderer. uninstall unregisters the same
+integration id. install and uninstall both provide the detected legacy
+Tokenjuice group as an owned-source manifest so the renderer can adopt or
+remove pre-fragment standalone state. without the renderer, Tokenjuice can update a regular
+standalone hooks file with a source-content check; it refuses to replace an
+externally owned symlink.
+
+standalone install and uninstall remove only Tokenjuice commands from a matcher
+group and preserve nested custom commands. the shared renderer currently owns
+whole groups, so Tokenjuice rejects a mixed Tokenjuice/custom group before
+invoking it; split those commands into distinct matcher groups and retry.
 
 ## regression gates before merge
 

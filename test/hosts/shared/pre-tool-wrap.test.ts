@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildWrapLauncherHookCommand,
@@ -15,6 +15,7 @@ import {
   resolveInstalledTokenjuicePath,
   resolveShellPath,
 } from "../../../src/hosts/shared/pre-tool-wrap.js";
+import { parseWrappedCommand } from "./wrap-command.js";
 
 const tempDirs: string[] = [];
 const originalPath = process.env.PATH;
@@ -250,6 +251,81 @@ describe("buildWrappedCommand", () => {
     expect(wrapped).toBe("/usr/local/bin/tokenjuice wrap --source cursor -- /bin/bash -lc 'git status --short'");
   });
 
+  // Regression: buildWrappedCommand used to quote the `-lc` payload with
+  // shellQuote(), which picks its style from process.platform. On win32 that
+  // wraps the command in bare double quotes with no escaping, so any command
+  // containing a quote of its own was re-split by bash into a DIFFERENT
+  // command -- silently, whenever the mangled form still parsed.
+  //
+  // The payload is parsed by the shell at shellPath, so its quoting must not
+  // depend on the host platform at all. These cases run identically on both.
+  describe.each(["linux", "win32"] as const)("payload quoting on %s", (platform) => {
+    const originalPlatform = process.platform;
+
+    beforeEach(() => {
+      Object.defineProperty(process, "platform", { value: platform });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    });
+
+    it.each([
+      ["git commit -m \"fix: thing\""],
+      ["echo \"a b\""],
+      ["grep -rn \"TODO\" src | head -3"],
+      ["echo it's raining"],
+      ["printf \"[%s]\n\" -m \"fix: thing\""],
+      [String.raw`printf '%s\n' '\"'`],
+      [String.raw`printf "%s\n" "a\\\"b"`],
+      ["git log --format=\"%H %s\" -5"],
+      ["git status --short"],
+    ])("round-trips %j through the shell payload", (command) => {
+      const parsed = parseWrappedCommand(
+        buildWrappedCommand({
+          wrapLauncher: "/usr/local/bin/tokenjuice",
+          shellPath: "/bin/bash",
+          command,
+        }),
+      );
+
+      expect(parsed.shellFlag).toBe("-lc");
+      // What actually runs must be byte-identical to what the user asked for.
+      expect(parsed.inner).toBe(command);
+      expect(parsed.wrapDepth).toBe(1);
+    });
+
+    it("keeps a quoted argument as one word instead of re-splitting it", () => {
+      const parsed = parseWrappedCommand(
+        buildWrappedCommand({
+          wrapLauncher: "/usr/local/bin/tokenjuice",
+          shellPath: "/bin/bash",
+          command: 'git commit -m "fix: thing"',
+        }),
+      );
+
+      // Pre-fix on win32 this was ["git","commit","-m","fix:","thing"] --
+      // a truncated message plus a stray pathspec.
+      expect(parsed.innerArgv).toEqual(["git", "commit", "-m", "fix: thing"]);
+    });
+
+    it("preserves Windows launcher and shell paths for Bash", () => {
+      const wrapLauncher = String.raw`C:\Users\me\bin\tokenjuice.cmd`;
+      const shellPath = String.raw`C:\Program Files\Git\bin\bash.exe`;
+      const parsed = parseWrappedCommand(
+        buildWrappedCommand({
+          wrapLauncher,
+          shellPath,
+          command: "git status --short",
+        }),
+      );
+
+      expect(parsed.launcher).toEqual([wrapLauncher]);
+      expect(parsed.shellPath).toBe(shellPath);
+      expect(parsed.inner).toBe("git status --short");
+    });
+  });
+
   it("escapes commands containing single quotes through POSIX shellQuote", () => {
     const wrapped = buildWrappedCommand({
       wrapLauncher: "/usr/local/bin/tokenjuice",
@@ -288,5 +364,23 @@ describe("commandAlreadyWrapped", () => {
     ["tokenjuice", false, "launcher without subcommand"],
   ])("returns %s for %j (%s)", (input, expected) => {
     expect(commandAlreadyWrapped(input)).toBe(expected);
+  });
+
+  it("recognizes a generated wrapper with Windows paths", () => {
+    const wrapped = buildWrappedCommand({
+      wrapLauncher: String.raw`C:\Users\me\bin\tokenjuice.cmd`,
+      shellPath: String.raw`C:\Program Files\Git\bin\bash.exe`,
+      command: "git status --short",
+    });
+
+    expect(commandAlreadyWrapped(wrapped)).toBe(true);
+  });
+
+  it("recognizes a manually double-quoted Windows launcher path", () => {
+    expect(
+      commandAlreadyWrapped(
+        String.raw`"C:\Program Files\tokenjuice.cmd" wrap -- "C:\Program Files\Git\bin\bash.exe" -lc 'git status'`,
+      ),
+    ).toBe(true);
   });
 });

@@ -237,6 +237,27 @@ describe("reduceExecution", () => {
     expect(artifact?.rawText).toContain("TODO one");
   });
 
+  it("stores raw artifacts without telemetry when stats are disabled", async () => {
+    const storeDir = await createTempDir();
+    const result = await reduceExecution(
+      {
+        toolName: "exec",
+        command: "rg TODO src",
+        argv: ["rg", "TODO", "src"],
+        combinedText: "src/a.ts:1:// TODO one\n",
+        exitCode: 0,
+      },
+      {
+        store: true,
+        recordStats: false,
+        storeDir,
+      },
+    );
+
+    expect(await getArtifact(result.rawRef!.id, storeDir)).not.toBeNull();
+    expect(await listArtifactMetadata(storeDir)).toEqual([]);
+  });
+
   it("records stats metadata without storing raw output when requested", async () => {
     const storeDir = await createTempDir();
     await reduceExecution(
@@ -262,7 +283,8 @@ describe("reduceExecution", () => {
 
     expect(metadata).toHaveLength(1);
     expect(metadata[0]?.path).toBeUndefined();
-    expect(metadata[0]?.metadata.command).toBe("git status");
+    expect(metadata[0]?.metadata.command).toBeUndefined();
+    expect(metadata[0]?.metadata.commandFamily).toBe("git");
     expect(stats.daily).toHaveLength(1);
     expect(stats.daily[0]?.count).toBe(1);
   });
@@ -298,6 +320,86 @@ describe("reduceExecution", () => {
 
     expect(result.classification.family).toBe("generic");
     expect(result.inlineText).toContain("lines omitted");
+  });
+
+  it("collapses repeated emoji banners in generic fallback output", async () => {
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "custom-tool check",
+      combinedText: [
+        "generated source follows",
+        Array.from({ length: 1_935 }, () => "🚨").join(" "),
+        "done",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toContain("[repeated emoji banner omitted: U+1F6A8 x1935]");
+    expect(result.inlineText).not.toContain("🚨");
+    expect(result.compaction).toEqual({
+      authoritative: true,
+      kinds: ["repeated-emoji-banner-omission"],
+    });
+  });
+
+  it.each([
+    {
+      label: "flag",
+      emoji: "🇫🇷",
+      codePoints: "U+1F1EB+U+1F1F7",
+    },
+    {
+      label: "keycap",
+      emoji: "1️⃣",
+      codePoints: "U+0031+U+FE0F+U+20E3",
+    },
+  ])("collapses repeated $label emoji graphemes", async ({ emoji, codePoints }) => {
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "custom-tool check",
+      combinedText: Array.from({ length: 48 }, () => emoji).join(" "),
+      exitCode: 0,
+    });
+
+    expect(result.inlineText).toBe(`[repeated emoji banner omitted: ${codePoints} x48]`);
+    expect(result.compaction?.kinds).toContain("repeated-emoji-banner-omission");
+  });
+
+  it("preserves normal emoji, CJK, and mixed-content lines", async () => {
+    const rawText = [
+      "状态正常 🚨",
+      "🚨".repeat(23),
+      `${"🚨".repeat(24)} warning`,
+      Array.from({ length: 24 }, () => "🇫").join(" "),
+      "1".repeat(24),
+      Array.from({ length: 24 }, (_, index) => index % 2 === 0 ? "🇫🇷" : "🇺🇸").join(" "),
+    ].join("\n");
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "custom-tool check",
+      combinedText: rawText,
+      exitCode: 0,
+    });
+
+    expect(result.inlineText).toBe(rawText);
+    expect(result.compaction?.authoritative).toBe(false);
+  });
+
+  it("preserves repeated emoji banners when noOmit is enabled", async () => {
+    const rawText = "🚨".repeat(48);
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "custom-tool check",
+      combinedText: rawText,
+      exitCode: 0,
+    }, {
+      noOmit: true,
+      maxInlineChars: 20_000,
+    });
+
+    expect(result.inlineText).toBe(rawText);
+    expect(result.compaction?.kinds).not.toContain("repeated-emoji-banner-omission");
   });
 
   it("minifies whole JSON object output before generic fallback", async () => {
@@ -824,6 +926,137 @@ describe("reduceExecution", () => {
       authoritative: true,
       kinds: expect.arrayContaining(["head-tail-omission"]),
     });
+  });
+
+  it("keeps match facts for successful direct rg searches", async () => {
+    const rawText = Array.from(
+      { length: 30 },
+      (_, index) => `src/file-${index + 1}.ts:${index + 1}:throw new Error("boom")`,
+    ).join("\n");
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "rg -n error src",
+      combinedText: rawText,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("search/rg");
+    expect(result.facts?.match).toBe(30);
+    expect(result.inlineText).toContain("30 matches");
+  });
+
+  it("labels successful framed search matches as neutral error mentions", async () => {
+    const rawText = Array.from(
+      { length: 30 },
+      (_, index) => `src/file-${index + 1}.ts:${index + 1}:throw new Error("boom")`,
+    ).join("\n");
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "bash -lc 'printf \"matches:\\n\"; rg -n error src'",
+      combinedText: rawText,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.facts?.error).toBe(30);
+    expect(result.inlineText).toMatch(/^30 error mentions$/mu);
+    expect(result.inlineText).toContain("lines omitted");
+  });
+
+  it("labels successful compound search facts as neutral mentions", async () => {
+    const errorMatches = Array.from(
+      { length: 24 },
+      (_, index) => `src/error-${index + 1}.ts:${index + 1}:throw new Error("boom")`,
+    );
+    const warningMatches = Array.from(
+      { length: 8 },
+      (_, index) => `src/warning-${index + 1}.ts:${index + 1}:console.warn("warning")`,
+    );
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "rg -n error src; rg -n warning src",
+      combinedText: [...errorMatches, ...warningMatches].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.facts).toMatchObject({
+      error: 24,
+      warning: 8,
+    });
+    expect(result.inlineText).toMatch(/^24 error mentions, 8 warning mentions$/mu);
+    expect(result.inlineText).toContain("lines omitted");
+  });
+
+  it("keeps generic error and warning facts when a compound search fails", async () => {
+    const errorMatches = Array.from(
+      { length: 24 },
+      (_, index) => `src/error-${index + 1}.ts:${index + 1}:throw new Error("boom")`,
+    );
+    const warningMatches = Array.from(
+      { length: 10 },
+      (_, index) => `src/warning-${index + 1}.ts:${index + 1}:console.warn("warning")`,
+    );
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "rg -n error src; rg -n warning src",
+      combinedText: [...errorMatches, ...warningMatches].join("\n"),
+      exitCode: 1,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toMatch(/^exit 1\n24 errors, 10 warnings$/mu);
+  });
+
+  it("labels successful non-search warning facts as neutral mentions", async () => {
+    const rawText = Array.from(
+      { length: 30 },
+      (_, index) => `plugin-${index + 1}: warning: deprecated option`,
+    ).join("\n");
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "custom-linter inspect plugins",
+      combinedText: rawText,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toMatch(/^30 warning mentions$/mu);
+  });
+
+  it("keeps mixed-chain severity facts as neutral mentions on success", async () => {
+    const errorMatches = Array.from(
+      { length: 24 },
+      (_, index) => `src/error-${index + 1}.ts:${index + 1}:throw new Error("boom")`,
+    );
+    const warningLines = Array.from(
+      { length: 8 },
+      (_, index) => `plugin-${index + 1}: warning: deprecated option`,
+    );
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "rg -n error src; custom-linter inspect plugins",
+      combinedText: [...errorMatches, ...warningLines].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toMatch(/^24 error mentions, 8 warning mentions$/mu);
+  });
+
+  it("keeps search severity facts when the exit status is unknown", async () => {
+    const rawText = Array.from(
+      { length: 30 },
+      (_, index) => `src/file-${index + 1}.ts:${index + 1}:throw new Error("boom")`,
+    ).join("\n");
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "rg -n error src; rg -n error test",
+      combinedText: rawText,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toMatch(/^30 errors$/mu);
   });
 
   it("does not summarize file inspection output from a multi-command sequence", async () => {
@@ -1369,25 +1602,24 @@ describe("reduceExecution", () => {
     expect(result.compaction?.authoritative).toBe(false);
   });
 
-  it("marks structured inspection summaries as authoritative compaction", async () => {
+  it("does not mark large document-shaped file inspections as authoritative compaction", async () => {
+    const combinedText = [
+      "# Review",
+      "intro",
+      "## Evidence",
+      ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+    ].join("\n");
     const result = await reduceExecution({
       toolName: "exec",
       command: "sed -n '1,260p' notes.txt",
       argv: ["sed", "-n", "1,260p", "notes.txt"],
-      combinedText: [
-        "# Review",
-        "intro",
-        "## Evidence",
-        ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
-      ].join("\n"),
+      combinedText,
       exitCode: 0,
     });
 
-    expect(result.classification.matchedReducer).toBe("generic/large-document-summary");
-    expect(result.compaction).toEqual({
-      authoritative: true,
-      kinds: ["inspection-large-document-summary", "head-tail-omission"],
-    });
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(combinedText);
+    expect(result.compaction).toEqual({ authoritative: false, kinds: [] });
   });
 
   it("keeps full git diff content and facts when noOmit is enabled", async () => {
@@ -1896,24 +2128,93 @@ describe("reduceExecution", () => {
     expect(result.inlineText).not.toContain("\"node_modules/pkg-79\"");
   });
 
-  it("summarizes large document-shaped file inspections without path allowlists", async () => {
+  it("keeps large document-shaped file inspections raw", async () => {
+    const combinedText = [
+      "# Review",
+      "intro",
+      "## Evidence",
+      ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+    ].join("\n");
     const result = await reduceExecution({
       toolName: "exec",
       command: "sed -n '1,260p' notes.txt",
       argv: ["sed", "-n", "1,260p", "notes.txt"],
-      combinedText: [
-        "# Review",
-        "intro",
-        "## Evidence",
-        ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
-      ].join("\n"),
+      combinedText,
       exitCode: 0,
     });
 
-    expect(result.classification.matchedReducer).toBe("generic/large-document-summary");
-    expect(result.inlineText).toContain("large document summary");
-    expect(result.inlineText).toContain("- # Review");
-    expect(result.inlineText).toContain("- ## Evidence");
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(combinedText);
+  });
+
+  it("keeps large await-shaped file inspections raw", async () => {
+    const line = '    await client.request("alpha beta gamma delta epsilon zeta eta theta")';
+    const source = Array.from({ length: 90 }, () => line).join("\n");
+
+    expect(line.trim().length).toBeGreaterThanOrEqual(50);
+    expect(source.length).toBeGreaterThan(4_000);
+    expect(source.split("\n").length).toBeGreaterThanOrEqual(40);
+
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "cat src/app.ts",
+      argv: ["cat", "src/app.ts"],
+      combinedText: source,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(source);
+  });
+
+  it("keeps a large python file whose hash comments look like headings raw", async () => {
+    const source = [
+      "# Configure the outbound client before the first request is sent",
+      "def fetch(name):",
+      "    return name",
+      "# Record evidence after the upstream request returns to the caller",
+      ...Array.from({ length: 80 }, (_, index) => `value_${index} = "payload ${index} ${"x".repeat(40)}"`),
+    ].join("\n");
+
+    expect(source.length).toBeGreaterThan(4_000);
+    expect(source.split("\n").length).toBeGreaterThanOrEqual(40);
+    expect(source.split("\n").filter((line) => /^#{1,6}\s+\S/u.test(line.trim())).length).toBeGreaterThanOrEqual(2);
+
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "cat src/client.py",
+      argv: ["cat", "src/client.py"],
+      combinedText: source,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(source);
+  });
+
+  it("keeps a large yaml file whose hash comments look like headings raw", async () => {
+    const source = [
+      "# service name for the billing worker",
+      "name: billing",
+      "# retry budget for the upstream call",
+      "retries: 3",
+      ...Array.from({ length: 80 }, (_, index) => `note_${index}: "payload ${index} ${"y".repeat(40)}"`),
+    ].join("\n");
+
+    expect(source.length).toBeGreaterThan(4_000);
+    expect(source.split("\n").length).toBeGreaterThanOrEqual(40);
+    expect(source.split("\n").filter((line) => /^#{1,6}\s+\S/u.test(line.trim())).length).toBeGreaterThanOrEqual(2);
+
+    const result = await reduceExecution({
+      toolName: "exec",
+      command: "cat deploy/service.yaml",
+      argv: ["cat", "deploy/service.yaml"],
+      combinedText: source,
+      exitCode: 0,
+    });
+
+    expect(result.classification.matchedReducer).toBe("generic/fallback");
+    expect(result.inlineText).toBe(source);
   });
 
   it("keeps large code-shaped file inspections raw", async () => {

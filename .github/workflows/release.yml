@@ -17,7 +17,6 @@ on:
         type: boolean
 
 permissions:
-  actions: write
   contents: write
   id-token: write
 
@@ -42,10 +41,19 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout release tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: refs/tags/${{ steps.release.outputs.tag }}
+
+      - name: Verify release version
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version)')"
+          if [ "${RELEASE_VERSION}" != "${PACKAGE_VERSION}" ]; then
+            echo "Release version ${RELEASE_VERSION} does not match package.json version ${PACKAGE_VERSION}."
+            exit 1
+          fi
 
       - name: Verify checked out release tag
         run: |
@@ -54,7 +62,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -66,7 +74,7 @@ jobs:
           pnpm --version
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: "1.23"
           cache: false
@@ -207,25 +215,6 @@ jobs:
             release/sha256sums.txt \
             release/Formula/token-glace.rb \
             --clobber
-
-      - name: Sync Homebrew tap
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          curl -fsSL \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/homebrew-tap.yml/dispatches" \
-            -d @- <<EOF
-          {
-            "ref": "main",
-            "inputs": {
-              "tag_name": "${RELEASE_TAG}"
-            }
-          }
-          EOF
 
       - name: Publish npm package
         if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}

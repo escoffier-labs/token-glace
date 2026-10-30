@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,9 +22,9 @@ afterEach(async () => {
 describe("runWrappedCommand", () => {
   it("preserves the child exit code and produces a compact result", async () => {
     const wrapped = await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "console.log('hello'); console.error('warning: noisy'); process.exit(3)",
+      "const fs = require('node:fs'); fs.writeSync(1, 'hello\\n'); fs.writeSync(2, 'warning: noisy\\n'); process.exit(3);",
     ]);
 
     expect(wrapped.exitCode).toBe(3);
@@ -36,9 +36,9 @@ describe("runWrappedCommand", () => {
     const storeDir = await createTempDir();
 
     await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "console.log('secret token value');",
+      "require('node:fs').writeSync(1, 'secret token value\\n');",
     ], {
       storeDir,
     });
@@ -49,9 +49,9 @@ describe("runWrappedCommand", () => {
 
   it("caps captured output to avoid unbounded memory growth", async () => {
     const wrapped = await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "process.stdout.write('a'.repeat(2000));",
+      "require('node:fs').writeSync(1, 'a'.repeat(2000));",
     ], {
       maxCaptureBytes: 128,
     });
@@ -65,9 +65,9 @@ describe("runWrappedCommand", () => {
     const storeDir = await createTempDir();
 
     await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "process.stdout.write('a'.repeat(2000));",
+      "require('node:fs').writeSync(1, 'a'.repeat(2000));",
     ], {
       maxCaptureBytes: 128,
       store: true,
@@ -81,9 +81,9 @@ describe("runWrappedCommand", () => {
 
   it("supports a raw bypass for wrapped commands", async () => {
     const wrapped = await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "process.stdout.write('usage: cmd\\n\\nflag\\n');",
+      "require('node:fs').writeSync(1, 'usage: cmd\\n\\nflag\\n');",
     ], {
       raw: true,
       maxInlineChars: 4,
@@ -93,13 +93,50 @@ describe("runWrappedCommand", () => {
     expect(wrapped.result.stats.ratio).toBe(1);
   });
 
+  it("preserves raw output when optional stats cannot be written", async () => {
+    const tempDir = await createTempDir();
+    const blockedStoreDir = join(tempDir, "artifact-dir-is-a-file");
+    await writeFile(blockedStoreDir, "not a directory", "utf8");
+
+    const wrapped = await runWrappedCommand([
+      process.execPath,
+      "-e",
+      "require('node:fs').writeSync(1, 'raw marker\\n'); process.exit(7);",
+    ], {
+      raw: true,
+      recordStats: true,
+      storeDir: blockedStoreDir,
+    });
+
+    expect(wrapped.exitCode).toBe(7);
+    expect(wrapped.stdout).toBe("raw marker\n");
+    expect(wrapped.result.inlineText).toBe("raw marker\n");
+    expect(wrapped.result.stats.ratio).toBe(1);
+  });
+
+  it("keeps explicit artifact storage failures strict", async () => {
+    const tempDir = await createTempDir();
+    const blockedStoreDir = join(tempDir, "artifact-dir-is-a-file");
+    await writeFile(blockedStoreDir, "not a directory", "utf8");
+
+    await expect(runWrappedCommand([
+      process.execPath,
+      "-e",
+      "require('node:fs').writeSync(1, 'raw marker\\n');",
+    ], {
+      raw: true,
+      store: true,
+      storeDir: blockedStoreDir,
+    })).rejects.toThrow(/EEXIST|ENOTDIR/u);
+  });
+
   it("records the requested source for wrapper stats", async () => {
     const storeDir = await createTempDir();
 
     await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "console.log('source tagged output');",
+      "require('node:fs').writeSync(1, 'source tagged output\\n');",
     ], {
       source: "cursor",
       recordStats: true,
@@ -113,9 +150,9 @@ describe("runWrappedCommand", () => {
 
   it("does not flag lossless rewrites as authoritative compaction", async () => {
     const wrapped = await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "process.stdout.write('Deleted branch fix/cd-prefixed-raw-bypass-main (was 76b6858).\\n');",
+      "require('node:fs').writeSync(1, 'Deleted branch fix/cd-prefixed-raw-bypass-main (was 76b6858).\\n');",
     ]);
 
     expect(wrapped.result.inlineText).toBe("Deleted branch fix/cd-prefixed-raw-bypass-main (was 76b6858).");
@@ -125,9 +162,9 @@ describe("runWrappedCommand", () => {
 
   it("does not keep authoritative compaction when passthrough beats a lossy summary", async () => {
     const wrapped = await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "process.stdout.write(Array.from({ length: 13 }, (_, index) => `v${index}`).join('\\n') + '\\n');",
+      "require('node:fs').writeSync(1, Array.from({ length: 13 }, (_, index) => `v${index}`).join('\\n') + '\\n');",
     ]);
 
     expect(wrapped.result.inlineText).toBe(Array.from({ length: 13 }, (_, index) => `v${index}`).join("\n"));
@@ -137,9 +174,9 @@ describe("runWrappedCommand", () => {
 
   it("flags omitted summaries as authoritative compaction", async () => {
     const wrapped = await runWrappedCommand([
-      "node",
+      process.execPath,
       "-e",
-      "process.stdout.write(Array.from({ length: 40 }, (_, index) => `line ${index} ${'x'.repeat(80)}`).join('\\n'));",
+      "require('node:fs').writeSync(1, Array.from({ length: 40 }, (_, index) => `line ${index} ${'x'.repeat(80)}`).join('\\n'));",
     ]);
 
     expect(wrapped.result.inlineText).toContain("omitted");
