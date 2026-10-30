@@ -316,7 +316,7 @@ describe("core command in-process dispatch", () => {
     it("exits 0", async () => {
       const result = await runCli(["stats", "--by-source"]);
       expect(result.exitCode).toBe(0);
-      expect(result.stdout.startsWith("entries:")).toBe(true);
+      expect(result.stdout).toMatch(/^entries: /m);
       expect(result.stderr).toBe("");
     }, RUN_CLI_TIMEOUT_MS);
 

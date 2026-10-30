@@ -1,18 +1,27 @@
-import { constants as fsConstants } from "node:fs";
-import { access, appendFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { mkdir, lstat, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import packageJson from "../../../package.json" with { type: "json" };
 
 import { stripLeadingCdPrefix } from "../../core/command.js";
-import { storeArtifactMetadata } from "../../core/artifacts.js";
+import { getTelemetryCommandFamily, shouldRecordStats, storeArtifact, tryStoreArtifactMetadata } from "../../core/artifacts.js";
+import { appendBoundedJsonl } from "../../core/bounded-jsonl.js";
+import type { CompactionMetadata } from "../../core/compaction-metadata.js";
+import { readNoOmissionFromEnv } from "../../core/env.js";
 import { compactBashResult, getOutputAwareInspectionSkipReason } from "../../core/integrations/compact-bash-result.js";
 import { classifyOnly } from "../../core/reduce.js";
-import { countTextChars, stripAnsi } from "../../core/text.js";
-import { extractHookCommandPaths, isNodeExecutablePath, parseShellWords, shellQuote } from "../shared/hook-command.js";
-import { buildCompactionHint } from "../shared/hook-output.js";
+import { countTextChars, sliceTextChars, stripAnsi } from "../../core/text.js";
+import { isNodeExecutablePath, parseShellWords } from "../shared/hook-command.js";
+import { buildTokenjuiceHookCommand, isExecutableFile } from "../shared/host-command.js";
+import { inspectTokenjuiceHookCommand } from "../shared/hook-command-doctor.js";
 
 import type { ToolExecutionInput } from "../../types.js";
+import type {
+  HookCommandPackageVersionMismatch,
+  HookCommandRuntimeMismatch,
+} from "../shared/hook-command-doctor.js";
 
 type CodexHookCommand = Record<string, unknown> & {
   type?: string;
@@ -40,26 +49,32 @@ type CodexPostToolUsePayload = {
     command?: unknown;
   };
   tool_response?: unknown;
+  session_id?: unknown;
+  thread_id?: unknown;
+  turn_id?: unknown;
+  tool_call_id?: unknown;
+  tool_use_id?: unknown;
 };
 
 const GENERIC_FALLBACK_MIN_SAVED_CHARS = 120;
 const GENERIC_FALLBACK_MAX_RATIO = 0.75;
 const HOOK_REWRITE_MIN_SAVED_CHARS = 8;
+const CODEX_HOOK_MAX_COMPACTION_BYTES = 1 * 1024 * 1024;
 const CODEX_HOOK_LAST_LOG = "tokenjuice-hook.last.json";
-const CODEX_HOOK_HISTORY_LOG = "tokenjuice-hook.history.jsonl";
-const CODEX_HOOK_HISTORY_LIMIT = 200;
-const CODEX_HOOK_HISTORY_LOCK_STALE_MS = 30_000;
-const CODEX_HOOK_HISTORY_LOCK_RETRY_MS = 25;
-const CODEX_HOOK_HISTORY_LOCK_RETRIES = 8;
+const CODEX_HOOK_HISTORY_DIRECTORY = "tokenjuice-hook.history-v1";
+const CODEX_HOOK_HISTORY_PREFIX = "events";
 const LOW_NON_TOKENJUICE_TIMEOUT_SECONDS = 2;
 const RECOMMENDED_NON_TOKENJUICE_TIMEOUT_SECONDS = 6;
-const TOKENJUICE_CODEX_HOOK_TIMEOUT_SECONDS = 10;
+const TOKENJUICE_CODEX_HOOK_TIMEOUT_SECONDS = 30;
+const CODEX_HOOK_INTEGRATION_ID = "tokenjuice.post-tool-use";
 
 export type InstallCodexHookResult = {
   hooksPath: string;
   backupPath?: string;
   command: string;
   featureFlag: CodexFeatureFlagStatus;
+  writer: "codex-hooks" | "standalone";
+  fragmentId: typeof CODEX_HOOK_INTEGRATION_ID;
 };
 
 export type CodexFeatureFlagStatus = {
@@ -86,7 +101,7 @@ export type CodexFeatureFlagStatus = {
   fixHint: string;
 };
 
-export type CodexRuntimeConfigStatus = {
+type CodexRuntimeConfigStatus = {
   /** Absolute path we scanned (`~/.codex/config.toml` by default). */
   configPath: string;
   /** Whether the config file exists on disk. */
@@ -100,6 +115,7 @@ export type CodexHookCommandOptions = {
   local?: boolean;
   binaryPath?: string;
   nodePath?: string;
+  noOmit?: boolean;
   /**
    * Override for the config.toml consulted when reporting the
    * `codex_hooks` feature-flag state. Defaults to `~/.codex/config.toml`.
@@ -109,6 +125,23 @@ export type CodexHookCommandOptions = {
   featureFlagConfigPath?: string;
 };
 
+function validateCodexOmissionPolicy(options: { noOmit?: boolean; allowOmit?: boolean }): void {
+  if (options.noOmit && options.allowOmit) {
+    throw new Error("Codex noOmit and allowOmit policies cannot be enabled together");
+  }
+}
+
+type CodexHookCommandDiagnostic = {
+  location: string;
+  command: string;
+  checkedPaths: string[];
+  missingPaths: string[];
+  nonExecutablePaths: string[];
+  runtimePath?: string;
+  runtimeMismatch?: HookCommandRuntimeMismatch;
+  packageVersionMismatch?: HookCommandPackageVersionMismatch;
+};
+
 export type CodexDoctorReport = {
   hooksPath: string;
   status: "ok" | "warn" | "broken" | "disabled";
@@ -116,8 +149,13 @@ export type CodexDoctorReport = {
   fixCommand: string;
   expectedCommand: string;
   detectedCommand?: string;
+  detectedCommands: CodexHookCommandDiagnostic[];
+  duplicateHookCount: number;
   checkedPaths: string[];
   missingPaths: string[];
+  nonExecutablePaths: string[];
+  runtimeMismatches: Array<HookCommandRuntimeMismatch & { location: string }>;
+  packageVersionMismatches: Array<HookCommandPackageVersionMismatch & { location: string }>;
   featureFlag: CodexFeatureFlagStatus;
   runtimeConfig: CodexRuntimeConfigStatus;
 };
@@ -126,6 +164,8 @@ export type UninstallCodexHookResult = {
   hooksPath: string;
   backupPath?: string;
   removed: number;
+  writer: "codex-hooks" | "standalone";
+  fragmentId: typeof CODEX_HOOK_INTEGRATION_ID;
 };
 
 const TOKENJUICE_CODEX_STATUS = "compacting bash output with tokenjuice";
@@ -246,7 +286,7 @@ export function parseCodexFeatureFlag(
   return { keyPresent: false, value: null };
 }
 
-export async function inspectCodexRuntimeConfig(
+async function inspectCodexRuntimeConfig(
   configPath: string = getDefaultCodexConfigPath(),
 ): Promise<CodexRuntimeConfigStatus> {
   let source: string;
@@ -327,74 +367,19 @@ function parseCodexRuntimeConfig(source: string): Omit<CodexRuntimeConfigStatus,
   return values;
 }
 
-async function isExecutableFile(path: string): Promise<boolean> {
-  try {
-    await access(path, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function resolveInstalledTokenjuicePath(): Promise<string | undefined> {
-  const pathValue = process.env.PATH;
-  if (!pathValue) {
-    return undefined;
-  }
-
-  const candidateNames = process.platform === "win32"
-    ? ["tokenjuice.exe", "tokenjuice.cmd", "tokenjuice.bat", "tokenjuice"]
-    : ["tokenjuice"];
-
-  for (const segment of pathValue.split(delimiter)) {
-    if (!segment) {
-      continue;
-    }
-
-    for (const candidateName of candidateNames) {
-      const candidatePath = join(segment, candidateName);
-      if (await isExecutableFile(candidatePath)) {
-        return candidatePath;
-      }
-    }
-  }
-
-  return undefined;
-}
-
 async function buildCodexHookCommand(options: CodexHookCommandOptions = {}): Promise<string> {
-  const rawBinaryPath = options.binaryPath ?? process.argv[1];
-  const binaryPath = rawBinaryPath && !isAbsolute(rawBinaryPath) ? resolve(rawBinaryPath) : rawBinaryPath;
-  const nodePath = options.nodePath ?? process.execPath;
-  if (!binaryPath) {
-    throw new Error("unable to resolve tokenjuice binary path for codex install");
-  }
-
-  if (!options.local) {
-    const installedBinaryPath = await resolveInstalledTokenjuicePath();
-    if (installedBinaryPath) {
-      return `${shellQuote(installedBinaryPath)} codex-post-tool-use`;
-    }
-  }
-
-  if (binaryPath.endsWith(".js")) {
-    return `${shellQuote(nodePath)} ${shellQuote(binaryPath)} codex-post-tool-use`;
-  }
-
-  return `${shellQuote(binaryPath)} codex-post-tool-use`;
+  const command = await buildTokenjuiceHookCommand("codex-post-tool-use", "codex", {
+    ...options,
+    pinNodeForJavaScriptLauncher: true,
+  });
+  return options.noOmit ? `${command} --no-omit` : command;
 }
 
-function getCodexFixCommand(local = false): string {
-  return local ? "tokenjuice install codex --local" : TOKENJUICE_CODEX_FIX_COMMAND;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
+function getCodexFixCommand(local = false, noOmit = false): string {
+  return [
+    local ? "tokenjuice install codex --local" : TOKENJUICE_CODEX_FIX_COMMAND,
+    ...(noOmit ? ["--no-omit"] : []),
+  ].join(" ");
 }
 
 async function newestMtimeMs(path: string): Promise<number | undefined> {
@@ -447,6 +432,17 @@ function stringifyToolResponse(value: unknown): string {
     return "";
   }
   if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (
+        isRecord(parsed)
+        && ["output", "text", "stdout", "stderr", "combinedText"].some((key) => key in parsed)
+      ) {
+        return stringifyToolResponse(parsed);
+      }
+    } catch {
+      // Plain output is expected to be much more common than a JSON-string envelope.
+    }
     return value;
   }
   if (Array.isArray(value)) {
@@ -456,11 +452,21 @@ function stringifyToolResponse(value: unknown): string {
       .join("\n");
   }
   if (isRecord(value)) {
-    for (const key of ["output", "text", "stdout", "stderr", "combinedText"]) {
-      const text = value[key];
-      if (typeof text === "string" && text) {
-        return text;
-      }
+    const combinedText = value.combinedText;
+    if (typeof combinedText === "string" && combinedText) {
+      return combinedText;
+    }
+
+    const stdout = typeof value.stdout === "string" ? value.stdout : "";
+    const stderr = typeof value.stderr === "string" ? value.stderr : "";
+    const output = typeof value.output === "string" ? value.output : "";
+    const text = typeof value.text === "string" ? value.text : "";
+    const primary = stdout || output || text;
+    if (primary && stderr) {
+      return [`[stdout]`, primary, `[stderr]`, stderr].join("\n");
+    }
+    if (primary || stderr) {
+      return primary || stderr;
     }
     return JSON.stringify(value);
   }
@@ -481,37 +487,73 @@ function createTokenjuiceCodexHook(command: string): CodexHookMatcherGroup {
   };
 }
 
-function isTokenjuiceCodexHook(group: CodexHookMatcherGroup): boolean {
-  return group.hooks.some((hook) => {
-    const command = typeof hook.command === "string" ? hook.command : "";
-    return hook.statusMessage === TOKENJUICE_CODEX_STATUS
-      || command.includes("codex-post-tool-use")
-      || command.includes("post_tool_use_tokenjuice.py");
-  });
+function isTokenjuiceCodexHookCommand(hook: CodexHookCommand): boolean {
+  const command = typeof hook.command === "string" ? hook.command : "";
+  return hook.statusMessage === TOKENJUICE_CODEX_STATUS
+    || command.includes("codex-post-tool-use")
+    || command.includes("post_tool_use_tokenjuice.py");
 }
 
-function findTokenjuiceCodexHookCommand(config: CodexHooksConfig): string | undefined {
-  return findTokenjuiceCodexHook(config)?.command;
-}
+function splitTokenjuiceCodexHooks(groups: CodexHookMatcherGroup[]): {
+  retained: CodexHookMatcherGroup[];
+  owned: CodexHookMatcherGroup[];
+  removed: number;
+  hasMixedGroup: boolean;
+} {
+  const retained: CodexHookMatcherGroup[] = [];
+  const owned: CodexHookMatcherGroup[] = [];
+  let removed = 0;
+  let hasMixedGroup = false;
 
-function findTokenjuiceCodexHook(config: CodexHooksConfig): CodexHookCommand | undefined {
-  for (const group of config.hooks.PostToolUse ?? []) {
-    if (!isTokenjuiceCodexHook(group)) {
+  for (const group of groups) {
+    const tokenjuiceHooks = group.hooks.filter(isTokenjuiceCodexHookCommand);
+    if (tokenjuiceHooks.length === 0) {
+      retained.push(group);
       continue;
     }
 
-    const hook = group.hooks.find((hook) => {
-      const hookCommand = typeof hook.command === "string" ? hook.command : "";
-      return hook.statusMessage === TOKENJUICE_CODEX_STATUS
-        || hookCommand.includes("codex-post-tool-use")
-        || hookCommand.includes("post_tool_use_tokenjuice.py");
-    });
-    if (hook) {
-      return hook;
+    const otherHooks = group.hooks.filter((hook) => !isTokenjuiceCodexHookCommand(hook));
+    removed += tokenjuiceHooks.length;
+    owned.push({ ...group, hooks: tokenjuiceHooks });
+    if (otherHooks.length > 0) {
+      hasMixedGroup = true;
+      retained.push({ ...group, hooks: otherHooks });
     }
   }
 
-  return undefined;
+  return { retained, owned, removed, hasMixedGroup };
+}
+
+function assertRendererCanOwnTokenjuiceGroups(
+  hooksPath: string,
+  split: ReturnType<typeof splitTokenjuiceCodexHooks>,
+): void {
+  if (split.hasMixedGroup) {
+    throw new Error(
+      `cannot safely migrate a mixed Tokenjuice/custom matcher group at ${hooksPath}; separate the commands into distinct groups before retrying with the codex-hooks renderer`,
+    );
+  }
+}
+
+function collectTokenjuiceCodexHookCommands(
+  config: CodexHooksConfig,
+): Array<{ location: string; hook: CodexHookCommand; command: string }> {
+  const commands: Array<{ location: string; hook: CodexHookCommand; command: string }> = [];
+  for (const [eventName, groups] of Object.entries(config.hooks)) {
+    groups.forEach((group, groupIndex) => {
+      group.hooks.forEach((hook, hookIndex) => {
+        if (!isTokenjuiceCodexHookCommand(hook) || typeof hook.command !== "string") {
+          return;
+        }
+        commands.push({
+          location: `${eventName}[${groupIndex}].hooks[${hookIndex}]`,
+          hook,
+          command: hook.command,
+        });
+      });
+    });
+  }
+  return commands;
 }
 
 function truncateHookCommand(command: string, maxLength = 80): string {
@@ -522,53 +564,15 @@ function truncateHookCommand(command: string, maxLength = 80): string {
   return `${trimmed.slice(0, maxLength - 3)}...`;
 }
 
-function extractHomebrewCellarVersion(path: string): string | undefined {
-  const normalized = path.replace(/\\/gu, "/");
-  const match = normalized.match(/\/Cellar\/tokenjuice\/([^/]+)\//u);
-  return match?.[1];
-}
-
-async function detectResolvedHomebrewVersionMismatch(
-  commandPaths: string[],
-): Promise<{ launcherPath: string; resolvedPath: string; resolvedVersion: string } | undefined> {
-  for (const path of commandPaths) {
-    if (!path.endsWith("/tokenjuice") && !path.endsWith("\\tokenjuice") && !path.endsWith("\\tokenjuice.exe")) {
-      continue;
-    }
-
-    let resolvedPath: string;
-    try {
-      resolvedPath = await realpath(path);
-    } catch {
-      continue;
-    }
-
-    const resolvedVersion = extractHomebrewCellarVersion(resolvedPath);
-    if (!resolvedVersion || resolvedVersion === packageJson.version) {
-      continue;
-    }
-
-    return {
-      launcherPath: path,
-      resolvedPath,
-      resolvedVersion,
-    };
-  }
-
-  return undefined;
-}
-
 function collectLowTimeoutWarnings(config: CodexHooksConfig): string[] {
   const issues: string[] = [];
 
   for (const [eventName, groups] of Object.entries(config.hooks)) {
     groups.forEach((group, groupIndex) => {
-      const tokenjuiceGroup = eventName === "PostToolUse" && isTokenjuiceCodexHook(group);
-      if (tokenjuiceGroup) {
-        return;
-      }
-
       group.hooks.forEach((hook, hookIndex) => {
+        if (eventName === "PostToolUse" && isTokenjuiceCodexHookCommand(hook)) {
+          return;
+        }
         if (typeof hook.command !== "string") {
           return;
         }
@@ -593,18 +597,16 @@ function collectLowTimeoutWarnings(config: CodexHooksConfig): string[] {
 }
 
 function collectTokenjuiceHookTimeoutWarnings(config: CodexHooksConfig, fixCommand: string): string[] {
-  const hook = findTokenjuiceCodexHook(config);
-  if (!hook) {
-    return [];
-  }
-
-  if (hook.timeout !== TOKENJUICE_CODEX_HOOK_TIMEOUT_SECONDS) {
+  const staleCommands = collectTokenjuiceCodexHookCommands(config)
+    .filter(({ hook }) => hook.timeout !== TOKENJUICE_CODEX_HOOK_TIMEOUT_SECONDS);
+  if (staleCommands.length === 1) {
     return [
       `configured Codex tokenjuice hook timeout is missing or stale; run ${fixCommand} to add the ${TOKENJUICE_CODEX_HOOK_TIMEOUT_SECONDS}s safety cap`,
     ];
   }
-
-  return [];
+  return staleCommands.map(({ location }) =>
+    `configured Codex tokenjuice hook ${location} timeout is missing or stale; run ${fixCommand} to add the ${TOKENJUICE_CODEX_HOOK_TIMEOUT_SECONDS}s safety cap`
+  );
 }
 
 function sanitizeHooksConfig(raw: unknown): CodexHooksConfig {
@@ -653,19 +655,155 @@ function sanitizeHooksConfig(raw: unknown): CodexHooksConfig {
   return { hooks };
 }
 
-async function loadHooksConfig(hooksPath: string): Promise<{ config: CodexHooksConfig; backupPath?: string }> {
+async function loadHooksConfig(hooksPath: string): Promise<{
+  config: CodexHooksConfig;
+  backupPath?: string;
+  sourceText?: string;
+}> {
   try {
     const rawText = await readFile(hooksPath, "utf8");
     const parsed = JSON.parse(rawText) as unknown;
     const config = sanitizeHooksConfig(parsed);
     const backupPath = `${hooksPath}.bak`;
     await writeFile(backupPath, rawText, "utf8");
-    return { config, backupPath };
+    return { config, backupPath, sourceText: rawText };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { config: { hooks: {} } };
     }
     throw new Error(`failed to load codex hooks from ${hooksPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function resolveCodexHooksRenderer(): Promise<string | undefined> {
+  const pathValue = process.env.PATH;
+  if (!pathValue) {
+    return undefined;
+  }
+  const names = process.platform === "win32"
+    ? ["codex-hooks.exe", "codex-hooks.cmd", "codex-hooks.bat", "codex-hooks"]
+    : ["codex-hooks"];
+  for (const segment of pathValue.split(delimiter)) {
+    if (!segment) {
+      continue;
+    }
+    for (const name of names) {
+      const candidate = join(segment, name);
+      if (await isExecutableFile(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+const UNSAFE_WINDOWS_BATCH_ARGUMENT = /["&|<>()^%!\u0000-\u001F\u007F]/u;
+
+function assertSafeWindowsBatchArguments(args: string[]): void {
+  if (args.some((arg) => !arg || arg.trim() !== arg || UNSAFE_WINDOWS_BATCH_ARGUMENT.test(arg))) {
+    throw new Error("unsafe Windows batch renderer argument");
+  }
+}
+
+async function runCodexHooksRenderer(
+  rendererPath: string,
+  action: "register" | "unregister",
+  hooksPath: string,
+  fragment?: CodexHooksConfig,
+  ownedSource?: CodexHooksConfig,
+): Promise<void> {
+  const nonce = `${process.pid}-${randomUUID()}`;
+  const fragmentPath = join(dirname(hooksPath), `.tokenjuice-hooks-fragment-${nonce}.json`);
+  const ownedSourcePath = join(dirname(hooksPath), `.tokenjuice-hooks-owned-${nonce}.json`);
+  const args = [
+    action,
+    "--integration-id",
+    CODEX_HOOK_INTEGRATION_ID,
+    "--target",
+    hooksPath,
+  ];
+  if (action === "register" && fragment) {
+    args.push("--fragment", fragmentPath);
+  }
+  if (ownedSource && Object.keys(ownedSource.hooks).length > 0) {
+    args.push("--owned-source", ownedSourcePath);
+  }
+  const isWindowsBatch = process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(rendererPath);
+  const executable = isWindowsBatch ? process.env.ComSpec?.trim() || "cmd.exe" : rendererPath;
+  const executableArgs = isWindowsBatch
+    ? ["/d", "/s", "/c", "call", rendererPath, ...args]
+    : args;
+  if (isWindowsBatch) {
+    assertSafeWindowsBatchArguments([...executableArgs, fragmentPath, ownedSourcePath]);
+  }
+
+  await mkdir(dirname(hooksPath), { recursive: true, mode: 0o700 });
+  try {
+    if (action === "register" && fragment) {
+      await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    }
+    if (ownedSource && Object.keys(ownedSource.hooks).length > 0) {
+      await writeFile(ownedSourcePath, `${JSON.stringify(ownedSource, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    }
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      execFile(executable, executableArgs, { encoding: "utf8" }, (error, _stdout, stderr) => {
+        if (!error) {
+          resolvePromise();
+          return;
+        }
+        const detail = stderr.trim() || error.message;
+        rejectPromise(new Error(`codex-hooks renderer failed: ${detail}`));
+      });
+    });
+  } finally {
+    await Promise.all([
+      rm(fragmentPath, { force: true }),
+      rm(ownedSourcePath, { force: true }),
+    ]);
+  }
+}
+
+async function assertStandaloneHooksTarget(hooksPath: string): Promise<void> {
+  try {
+    if ((await lstat(hooksPath)).isSymbolicLink()) {
+      throw new Error(
+        `cannot directly replace externally owned hooks symlink at ${hooksPath}; install codex-hooks or update its owner`,
+      );
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function assertHooksSourceUnchanged(hooksPath: string, sourceText: string | undefined): Promise<void> {
+  try {
+    const current = await readFile(hooksPath, "utf8");
+    if (current !== sourceText) {
+      throw new Error(`codex hooks changed during update at ${hooksPath}; no replacement`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && sourceText === undefined) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function writeStandaloneHooksConfig(
+  hooksPath: string,
+  config: CodexHooksConfig,
+  sourceText: string | undefined,
+): Promise<void> {
+  await mkdir(dirname(hooksPath), { recursive: true });
+  const tempPath = `${hooksPath}.tmp.${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await assertHooksSourceUnchanged(hooksPath, sourceText);
+    await rename(tempPath, hooksPath);
+  } finally {
+    await rm(tempPath, { force: true });
   }
 }
 
@@ -731,17 +869,75 @@ function commandRequestsTokenjuiceRawBypass(command: string): boolean {
   return optionArgs.includes("--raw") || optionArgs.includes("--full");
 }
 
-function buildCodexFeedback(inlineText: string, rawRefId?: string): string {
-  return `${inlineText}\n\n${buildCompactionHint(rawRefId)}`;
+function buildCodexFeedback(
+  inlineText: string,
+  rawRefId?: string,
+  compaction?: CompactionMetadata,
+  exitCode?: number,
+  maxChars = 1200,
+  noOmit = false,
+): { text: string; truncated: boolean } | undefined {
+  const recoveryReference = rawRefId
+    ? `tokenjuice cat ${rawRefId}`
+    : undefined;
+  const serialize = (compactedOutput: string, authoritative: boolean): string => [
+    "<tokenjuice_compacted_tool_observation>",
+    JSON.stringify({
+      source: "codex-post-tool-use",
+      exitCode: exitCode ?? null,
+      authority: authoritative ? "authoritative-omission" : "non-authoritative-rewrite",
+      compactedOutput,
+      ...(authoritative && recoveryReference ? { recoveryReference } : {}),
+    }, null, 2),
+    "</tokenjuice_compacted_tool_observation>",
+  ].join("\n");
+
+  const feedback = serialize(inlineText, compaction?.authoritative === true);
+  if (countTextChars(feedback) <= maxChars) {
+    return { text: feedback, truncated: false };
+  }
+  if (noOmit) {
+    return undefined;
+  }
+
+  const truncationMarker = "\n... compacted observation truncated ...";
+  let low = 0;
+  let high = countTextChars(inlineText);
+  let best: string | undefined;
+  while (low <= high) {
+    const midpoint = Math.floor((low + high) / 2);
+    const candidate = serialize(`${sliceTextChars(inlineText, 0, midpoint)}${truncationMarker}`, true);
+    if (countTextChars(candidate) <= maxChars) {
+      best = candidate;
+      low = midpoint + 1;
+    } else {
+      high = midpoint - 1;
+    }
+  }
+
+  return best ? { text: best, truncated: true } : undefined;
 }
 
-function buildCodexReplacementOutput(inlineText: string, rawRefId?: string): Record<string, unknown> {
-  const feedback = buildCodexFeedback(inlineText, rawRefId);
+function buildCodexReplacementOutput(
+  inlineText: string,
+  rawRefId?: string,
+  compaction?: CompactionMetadata,
+  exitCode?: number,
+  maxChars?: number,
+  noOmit?: boolean,
+): { payload: Record<string, unknown>; truncated: boolean } | undefined {
+  const feedback = buildCodexFeedback(inlineText, rawRefId, compaction, exitCode, maxChars, noOmit);
+  if (!feedback) {
+    return undefined;
+  }
   return {
-    hookSpecificOutput: {
-      hookEventName: "PostToolUse",
-      additionalContext: feedback,
+    payload: {
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        additionalContext: feedback.text,
+      },
     },
+    truncated: feedback.truncated,
   };
 }
 
@@ -763,9 +959,18 @@ function extractCodexExitCode(payload: CodexPostToolUsePayload): number | undefi
     }
   }
 
-  if (isRecord(payload.tool_response)) {
-    for (const key of ["exitCode", "exit_code"]) {
-      const parsed = parseExitCodeValue(payload.tool_response[key]);
+  let response = payload.tool_response;
+  if (typeof response === "string") {
+    try {
+      response = JSON.parse(response) as unknown;
+    } catch {
+      response = undefined;
+    }
+  }
+
+  if (isRecord(response)) {
+    for (const key of ["exitCode", "exit_code", "status"]) {
+      const parsed = parseExitCodeValue(response[key]);
       if (typeof parsed === "number") {
         return parsed;
       }
@@ -775,21 +980,104 @@ function extractCodexExitCode(payload: CodexPostToolUsePayload): number | undefi
   return undefined;
 }
 
+function isJsonDocument(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasStructuredJsonOutput(value: unknown): boolean {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (
+        isRecord(parsed)
+        && ["output", "text", "stdout", "stderr", "combinedText"].some((key) => key in parsed)
+      ) {
+        return hasStructuredJsonOutput(parsed);
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasStructuredJsonOutput(entry));
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return ["combinedText", "stdout", "output", "text"].some((key) =>
+    typeof value[key] === "string" && isJsonDocument(value[key])
+  );
+}
+
+function getCriticalCodexEvidenceReason(
+  command: string,
+  text: string,
+  exitCode: number | undefined,
+): string | undefined {
+  if (typeof exitCode === "number" && exitCode !== 0) {
+    return "nonzero-exit-evidence";
+  }
+  if (isJsonDocument(text)) {
+    return "machine-readable-output";
+  }
+  if (/(?:^|[/\\\s'"])(?:AGENTS|SOUL|SKILL)\.md(?:$|[/\\\s'"])/iu.test(command)) {
+    return "instruction-file-output";
+  }
+  if (
+    /(?:^|\s)['"]?(?:\.schema|\\d[+a-z]*)['"]?(?:\s|$)/iu.test(command)
+    || /\b(?:schema-only|show\s+create|pragma)\b/iu.test(command)
+    // `describe` is SQL schema output only inside a SQL client; kubectl, aws, and git use it for noisy output.
+    || /\b(?:sqlite3|psql|mysql|mariadb|duckdb)\b.*\b(?:describe|desc)\b/iu.test(command)
+  ) {
+    return "schema-output";
+  }
+  return undefined;
+}
+
 export async function installCodexHook(
   hooksPath = getDefaultHooksPath(),
   options: CodexHookCommandOptions = {},
 ): Promise<InstallCodexHookResult> {
-  const { config, backupPath } = await loadHooksConfig(hooksPath);
   const command = await buildCodexHookCommand(options);
+  const rendererPath = await resolveCodexHooksRenderer();
+  if (rendererPath) {
+    const { config } = await readHooksConfig(hooksPath);
+    const split = splitTokenjuiceCodexHooks(config.hooks.PostToolUse ?? []);
+    assertRendererCanOwnTokenjuiceGroups(hooksPath, split);
+    const ownedSource: CodexHooksConfig = {
+      hooks: split.owned.length > 0 ? { PostToolUse: split.owned } : {},
+    };
+    await runCodexHooksRenderer(
+      rendererPath,
+      "register",
+      hooksPath,
+      { hooks: { PostToolUse: [createTokenjuiceCodexHook(command)] } },
+      ownedSource,
+    );
+    const featureFlag = await inspectCodexHooksFeatureFlag(options.featureFlagConfigPath);
+    return {
+      hooksPath,
+      command,
+      featureFlag,
+      writer: "codex-hooks",
+      fragmentId: CODEX_HOOK_INTEGRATION_ID,
+    };
+  }
+
+  await assertStandaloneHooksTarget(hooksPath);
+  const { config, backupPath, sourceText } = await loadHooksConfig(hooksPath);
   const postToolUse = config.hooks.PostToolUse ?? [];
-  const retained = postToolUse.filter((group) => !isTokenjuiceCodexHook(group));
+  const { retained } = splitTokenjuiceCodexHooks(postToolUse);
   retained.push(createTokenjuiceCodexHook(command));
   config.hooks.PostToolUse = retained;
 
-  await mkdir(dirname(hooksPath), { recursive: true });
-  const tempPath = `${hooksPath}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  await rename(tempPath, hooksPath);
+  await writeStandaloneHooksConfig(hooksPath, config, sourceText);
 
   const featureFlag = await inspectCodexHooksFeatureFlag(options.featureFlagConfigPath);
 
@@ -798,16 +1086,35 @@ export async function installCodexHook(
     ...(backupPath ? { backupPath } : {}),
     command,
     featureFlag,
+    writer: "standalone",
+    fragmentId: CODEX_HOOK_INTEGRATION_ID,
   };
 }
 
 export async function uninstallCodexHook(
   hooksPath = getDefaultHooksPath(),
 ): Promise<UninstallCodexHookResult> {
-  const { config, backupPath } = await loadHooksConfig(hooksPath);
+  const rendererPath = await resolveCodexHooksRenderer();
+  if (rendererPath) {
+    const { config } = await readHooksConfig(hooksPath);
+    const split = splitTokenjuiceCodexHooks(config.hooks.PostToolUse ?? []);
+    assertRendererCanOwnTokenjuiceGroups(hooksPath, split);
+    const ownedSource: CodexHooksConfig = {
+      hooks: split.owned.length > 0 ? { PostToolUse: split.owned } : {},
+    };
+    await runCodexHooksRenderer(rendererPath, "unregister", hooksPath, undefined, ownedSource);
+    return {
+      hooksPath,
+      removed: split.removed,
+      writer: "codex-hooks",
+      fragmentId: CODEX_HOOK_INTEGRATION_ID,
+    };
+  }
+
+  await assertStandaloneHooksTarget(hooksPath);
+  const { config, backupPath, sourceText } = await loadHooksConfig(hooksPath);
   const postToolUse = config.hooks.PostToolUse ?? [];
-  const retained = postToolUse.filter((group) => !isTokenjuiceCodexHook(group));
-  const removed = postToolUse.length - retained.length;
+  const { retained, removed } = splitTokenjuiceCodexHooks(postToolUse);
 
   if (retained.length > 0) {
     config.hooks.PostToolUse = retained;
@@ -815,15 +1122,14 @@ export async function uninstallCodexHook(
     delete config.hooks.PostToolUse;
   }
 
-  await mkdir(dirname(hooksPath), { recursive: true });
-  const tempPath = `${hooksPath}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  await rename(tempPath, hooksPath);
+  await writeStandaloneHooksConfig(hooksPath, config, sourceText);
 
   return {
     hooksPath,
     ...(backupPath ? { backupPath } : {}),
     removed,
+    writer: "standalone",
+    fragmentId: CODEX_HOOK_INTEGRATION_ID,
   };
 }
 
@@ -831,11 +1137,37 @@ export async function doctorCodexHook(
   hooksPath = getDefaultHooksPath(),
   options: CodexHookCommandOptions = {},
 ): Promise<CodexDoctorReport> {
+  const noOmit = options.noOmit === true;
   const expectedCommand = await buildCodexHookCommand(options);
-  const installFixCommand = getCodexFixCommand(options.local);
+  const expectedNodePath = options.nodePath ?? process.execPath;
+  const installFixCommand = getCodexFixCommand(options.local, noOmit);
   let fixCommand = installFixCommand;
   const { config, exists } = await readHooksConfig(hooksPath);
-  const detectedCommand = findTokenjuiceCodexHookCommand(config);
+  const locatedCommands = collectTokenjuiceCodexHookCommands(config);
+  const detectedCommands = await Promise.all(
+    locatedCommands.map(async ({ location, command }): Promise<CodexHookCommandDiagnostic> => ({
+      location,
+      command,
+      ...(await inspectTokenjuiceHookCommand({
+        command,
+        expectedNodePath,
+        expectedPackageVersion: packageJson.version,
+      })),
+    })),
+  );
+  const detectedCommand = detectedCommands[0]?.command;
+  const duplicateHookCount = Math.max(0, detectedCommands.length - 1);
+  const checkedPaths = [...new Set(detectedCommands.flatMap((entry) => entry.checkedPaths))];
+  const missingPaths = [...new Set(detectedCommands.flatMap((entry) => entry.missingPaths))];
+  const nonExecutablePaths = [...new Set(detectedCommands.flatMap((entry) => entry.nonExecutablePaths))];
+  const runtimeMismatches = detectedCommands.flatMap((entry) =>
+    entry.runtimeMismatch ? [{ location: entry.location, ...entry.runtimeMismatch }] : []
+  );
+  const packageVersionMismatches = detectedCommands.flatMap((entry) =>
+    entry.packageVersionMismatch
+      ? [{ location: entry.location, ...entry.packageVersionMismatch }]
+      : []
+  );
   const featureFlag = await inspectCodexHooksFeatureFlag(options.featureFlagConfigPath);
   const runtimeConfig = await inspectCodexRuntimeConfig(options.featureFlagConfigPath);
 
@@ -846,8 +1178,13 @@ export async function doctorCodexHook(
       issues: [],
       fixCommand,
       expectedCommand,
+      detectedCommands,
+      duplicateHookCount,
       checkedPaths: [],
       missingPaths: [],
+      nonExecutablePaths: [],
+      runtimeMismatches: [],
+      packageVersionMismatches: [],
       featureFlag,
       runtimeConfig,
     };
@@ -860,24 +1197,27 @@ export async function doctorCodexHook(
       issues: [],
       fixCommand,
       expectedCommand,
+      detectedCommands,
+      duplicateHookCount,
       checkedPaths: [],
       missingPaths: [],
+      nonExecutablePaths: [],
+      runtimeMismatches: [],
+      packageVersionMismatches: [],
       featureFlag,
       runtimeConfig,
     };
   }
 
-  const checkedPaths = extractHookCommandPaths(detectedCommand);
-  const missingPaths: string[] = [];
-  for (const path of checkedPaths) {
-    if (!(await isExecutableFile(path)) && !(path.endsWith(".js") && await pathExists(path))) {
-      missingPaths.push(path);
-    }
-  }
-
   const issues: string[] = [];
-  if (detectedCommand !== expectedCommand) {
-    if (detectedCommand.includes("/Cellar/")) {
+  const commandMismatch = detectedCommands.some((entry) => entry.command !== expectedCommand);
+  if (duplicateHookCount > 0) {
+    issues.push(
+      `configured Codex hooks contain ${detectedCommands.length} tokenjuice commands; expected exactly one managed hook`,
+    );
+  }
+  if (commandMismatch) {
+    if (detectedCommands.some((entry) => entry.command.includes("/Cellar/"))) {
       issues.push("configured Codex hook is pinned to a versioned Homebrew Cellar path");
     } else {
       issues.push("configured Codex hook command does not match the current recommended command");
@@ -886,16 +1226,25 @@ export async function doctorCodexHook(
   if (missingPaths.length > 0) {
     issues.push(`configured Codex hook points at missing path${missingPaths.length === 1 ? "" : "s"}`);
   }
-  const resolvedVersionMismatch = await detectResolvedHomebrewVersionMismatch(checkedPaths);
-  if (resolvedVersionMismatch) {
+  if (nonExecutablePaths.length > 0) {
+    issues.push(`configured Codex hook points at non-executable path${nonExecutablePaths.length === 1 ? "" : "s"}`);
+  }
+  for (const mismatch of runtimeMismatches) {
     issues.push(
-      `configured Codex hook launcher resolves to Homebrew tokenjuice ${resolvedVersionMismatch.resolvedVersion}, but this tokenjuice is ${packageJson.version}`,
+      `configured Codex hook ${mismatch.location} uses Node runtime ${mismatch.configuredPath}, but this tokenjuice uses ${mismatch.expectedPath}`,
     );
-    fixCommand = "brew upgrade tokenjuice";
+  }
+  for (const mismatch of packageVersionMismatches) {
+    issues.push(
+      `configured Codex hook launcher resolves to Homebrew tokenjuice ${mismatch.resolvedVersion}, but this tokenjuice is ${mismatch.expectedVersion}`,
+    );
+    fixCommand = commandMismatch
+      ? `brew upgrade tokenjuice && ${installFixCommand}`
+      : "brew upgrade tokenjuice";
   }
   if (options.local && await detectStaleLocalBuild(checkedPaths)) {
     issues.push("local Codex hook target is older than the source tree");
-    fixCommand = "pnpm build && tokenjuice install codex --local";
+    fixCommand = `pnpm build && ${getCodexFixCommand(true, noOmit)}`;
   }
   if (!featureFlag.enabled) {
     issues.push(
@@ -907,13 +1256,22 @@ export async function doctorCodexHook(
 
   return {
     hooksPath,
-    status: missingPaths.length > 0 ? "broken" : issues.length > 0 ? "warn" : "ok",
+    status: missingPaths.length > 0 || nonExecutablePaths.length > 0
+      ? "broken"
+      : issues.length > 0
+        ? "warn"
+        : "ok",
     issues,
     fixCommand,
     expectedCommand,
     detectedCommand,
+    detectedCommands,
+    duplicateHookCount,
     checkedPaths,
     missingPaths,
+    nonExecutablePaths,
+    runtimeMismatches,
+    packageVersionMismatches,
     featureFlag,
     runtimeConfig,
   };
@@ -934,107 +1292,38 @@ function shouldStoreFromEnv(): boolean {
 }
 
 async function writeHookDebug(record: Record<string, unknown>): Promise<void> {
-  const codexHome = getCodexHome();
-  const debugPath = join(codexHome, CODEX_HOOK_LAST_LOG);
-  const historyPath = join(codexHome, CODEX_HOOK_HISTORY_LOG);
-  const enrichedRecord = {
-    timestamp: new Date().toISOString(),
-    tokenjuiceVersion: packageJson.version,
-    hookCommandPath: process.argv[1],
-    ...record,
-  };
-  await mkdir(dirname(debugPath), { recursive: true });
-  await writeFile(debugPath, `${JSON.stringify(enrichedRecord, null, 2)}\n`, "utf8");
-
-  await writeHookHistoryEntry(historyPath, JSON.stringify(enrichedRecord));
-}
-
-function sanitizeHookHistoryLines(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => {
-      try {
-        JSON.parse(line);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => {
-    setTimeout(resolvePromise, ms);
-  });
-}
-
-async function acquireHistoryLock(lockPath: string): Promise<boolean> {
-  for (let attempt = 0; attempt <= CODEX_HOOK_HISTORY_LOCK_RETRIES; attempt += 1) {
-    try {
-      await mkdir(lockPath);
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") {
-        throw error;
-      }
-
-      try {
-        const details = await stat(lockPath);
-        if (Date.now() - details.mtimeMs > CODEX_HOOK_HISTORY_LOCK_STALE_MS) {
-          await rm(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch (statError) {
-        const statCode = (statError as NodeJS.ErrnoException).code;
-        if (statCode !== "ENOENT") {
-          throw statError;
-        }
-        continue;
-      }
-
-      if (attempt < CODEX_HOOK_HISTORY_LOCK_RETRIES) {
-        await wait(CODEX_HOOK_HISTORY_LOCK_RETRY_MS);
-      }
-    }
-  }
-
-  return false;
-}
-
-async function writeHookHistoryEntry(historyPath: string, line: string): Promise<void> {
-  const lockPath = `${historyPath}.lock`;
-  const tempPath = `${historyPath}.${process.pid}.tmp`;
-  const hasLock = await acquireHistoryLock(lockPath);
-
-  if (!hasLock) {
-    await appendFile(historyPath, `${line}\n`, "utf8");
+  if (!shouldRecordStats()) {
     return;
   }
-
   try {
-    let historyLines: string[] = [];
-    try {
-      historyLines = sanitizeHookHistoryLines(await readFile(historyPath, "utf8"));
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        throw error;
+    const codexHome = getCodexHome();
+    const debugPath = join(codexHome, CODEX_HOOK_LAST_LOG);
+    const enrichedRecord: Record<string, unknown> & { eventId: string } = {
+      eventId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      tokenjuiceVersion: packageJson.version,
+      hookCommandPath: process.argv[1],
+      ...record,
+    };
+    await mkdir(dirname(debugPath), { recursive: true });
+    await writeFile(debugPath, `${JSON.stringify(enrichedRecord, null, 2)}\n`, "utf8");
+    const historyRecord = { ...enrichedRecord };
+    if (typeof historyRecord.command === "string") {
+      const command = historyRecord.command;
+      delete historyRecord.command;
+      const commandFamily = getTelemetryCommandFamily({ command });
+      if (commandFamily) {
+        historyRecord.commandFamily = commandFamily;
       }
     }
-
-    historyLines.push(line);
-    if (historyLines.length > CODEX_HOOK_HISTORY_LIMIT) {
-      historyLines = historyLines.slice(-CODEX_HOOK_HISTORY_LIMIT);
-    }
-
-    await writeFile(tempPath, `${historyLines.join("\n")}\n`, "utf8");
-    await rename(tempPath, historyPath);
-  } finally {
-    await rm(tempPath, { force: true }).catch(() => {});
-    await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+    await appendBoundedJsonl(
+      join(codexHome, CODEX_HOOK_HISTORY_DIRECTORY),
+      CODEX_HOOK_HISTORY_PREFIX,
+      enrichedRecord.eventId,
+      historyRecord,
+    );
+  } catch {
+    // A diagnostic side effect must never turn an otherwise optional hook into a failed tool call.
   }
 }
 
@@ -1058,14 +1347,15 @@ async function recordImmediateHookStats(
   rawText: string,
   storeRaw: boolean,
 ): Promise<void> {
-  if (storeRaw) {
+  const recordStats = shouldRecordStats();
+  if (!storeRaw && !recordStats) {
     return;
   }
 
   const stats = buildImmediateSkipStats(rawText);
-  const classification = await classifyOnly(input);
-  await storeArtifactMetadata(
-    {
+  try {
+    const classification = await classifyOnly(input);
+    const artifact = {
       input,
       rawText,
       classification,
@@ -1074,11 +1364,23 @@ async function recordImmediateHookStats(
         reducedChars: stats.reducedChars,
         ratio: stats.ratio,
       },
-    },
-  );
+    };
+    if (storeRaw) {
+      await storeArtifact({ ...artifact, recordStats });
+    } else {
+      await tryStoreArtifactMetadata(artifact);
+    }
+  } catch {
+    // Optional retention and telemetry must not fail the host tool call.
+  }
 }
 
-export async function runCodexPostToolUseHook(rawText: string): Promise<number> {
+export async function runCodexPostToolUseHook(
+  rawText: string,
+  options: { noOmit?: boolean; allowOmit?: boolean } = {},
+): Promise<number> {
+  const hookStartedAt = Date.now();
+  validateCodexOmissionPolicy(options);
   let payload: CodexPostToolUsePayload;
   try {
     payload = JSON.parse(rawText) as CodexPostToolUsePayload;
@@ -1087,29 +1389,58 @@ export async function runCodexPostToolUseHook(rawText: string): Promise<number> 
   }
 
   const command = payload.tool_input?.command;
+  const noOmit = !options.allowOmit && (options.noOmit || readNoOmissionFromEnv());
   const debug: Record<string, unknown> = {
     hookEvent: payload.hook_event_name,
     toolName: payload.tool_name,
     command,
+    noOmit,
     rewrote: false,
+    ...(typeof payload.session_id === "string" ? { threadId: payload.session_id } : {}),
+    ...(typeof payload.thread_id === "string" ? { threadId: payload.thread_id } : {}),
+    ...(typeof payload.turn_id === "string" ? { turnId: payload.turn_id } : {}),
+    ...(typeof payload.tool_call_id === "string" ? { callId: payload.tool_call_id } : {}),
+    ...(typeof payload.tool_use_id === "string" ? { callId: payload.tool_use_id } : {}),
+  };
+  const writeDebug = async (record: Record<string, unknown>): Promise<void> => {
+    await writeHookDebug({
+      ...record,
+      hookLatencyMs: Date.now() - hookStartedAt,
+    });
   };
 
   if (payload.hook_event_name !== "PostToolUse") {
-    await writeHookDebug({ ...debug, skipped: "non-post-tool-use" });
+    await writeDebug({ ...debug, skipped: "non-post-tool-use" });
     return 0;
   }
   if (payload.tool_name !== "Bash") {
-    await writeHookDebug({ ...debug, skipped: "non-bash" });
+    await writeDebug({ ...debug, skipped: "non-bash" });
     return 0;
   }
   if (typeof command !== "string" || !command.trim()) {
-    await writeHookDebug({ ...debug, skipped: "missing-command" });
+    await writeDebug({ ...debug, skipped: "missing-command" });
     return 0;
   }
 
   const combinedText = stringifyToolResponse(payload.tool_response);
   if (!combinedText.trim()) {
-    await writeHookDebug({ ...debug, skipped: "empty-tool-response" });
+    await writeDebug({ ...debug, skipped: "empty-tool-response" });
+    return 0;
+  }
+
+  const rawBytes = Buffer.byteLength(combinedText, "utf8");
+  if (rawBytes > CODEX_HOOK_MAX_COMPACTION_BYTES) {
+    const plainText = stripAnsi(combinedText);
+    const rawChars = countTextChars(plainText);
+    await writeDebug({
+      ...debug,
+      rawChars,
+      rawBytes,
+      reducedChars: rawChars,
+      savedChars: 0,
+      ratio: 1,
+      skipped: "response-too-large",
+    });
     return 0;
   }
 
@@ -1125,11 +1456,26 @@ export async function runCodexPostToolUseHook(rawText: string): Promise<number> 
     },
   };
   const storeRaw = shouldStoreFromEnv();
+  const criticalEvidenceReason = hasStructuredJsonOutput(payload.tool_response)
+    ? "machine-readable-output"
+    : getCriticalCodexEvidenceReason(command, combinedText, exitCode);
+
+  if (criticalEvidenceReason) {
+    await recordImmediateHookStats(executionInput, combinedText, storeRaw);
+    await writeDebug({
+      ...debug,
+      ...buildImmediateSkipStats(combinedText),
+      exitCode,
+      deliveryMode: "original-only",
+      skipped: criticalEvidenceReason,
+    });
+    return 0;
+  }
 
   if (commandRequestsTokenjuiceRawBypass(command)) {
     await recordImmediateHookStats(executionInput, combinedText, storeRaw);
     const stats = buildImmediateSkipStats(combinedText);
-    await writeHookDebug({
+    await writeDebug({
       ...debug,
       ...stats,
       skipped: "explicit-raw-bypass",
@@ -1141,7 +1487,7 @@ export async function runCodexPostToolUseHook(rawText: string): Promise<number> 
   if (inspectionSkipReason) {
     await recordImmediateHookStats(executionInput, combinedText, storeRaw);
     const stats = buildImmediateSkipStats(combinedText);
-    await writeHookDebug({
+    await writeDebug({
       ...debug,
       ...stats,
       skipped: inspectionSkipReason,
@@ -1158,8 +1504,11 @@ export async function runCodexPostToolUseHook(rawText: string): Promise<number> 
       visibleText: combinedText,
       ...(typeof payload.cwd === "string" && payload.cwd.trim() ? { cwd: payload.cwd } : {}),
       ...(typeof exitCode === "number" ? { exitCode } : {}),
+      ...(options.allowOmit ? { allowOmit: true } : {}),
       ...(typeof maxInlineChars === "number" ? { maxInlineChars } : {}),
+      ...(noOmit ? { noOmit: true } : {}),
       storeRaw,
+      recordStats: shouldRecordStats(),
       metadata: {
         source: "codex-post-tool-use",
       },
@@ -1179,19 +1528,40 @@ export async function runCodexPostToolUseHook(rawText: string): Promise<number> 
       debug.savedChars = savedChars;
       debug.ratio = result.stats.ratio;
       debug.matchedReducer = result.classification.matchedReducer;
+      debug.compaction = result.compaction;
     }
 
     if (outcome.action === "keep") {
-      await writeHookDebug({ ...debug, skipped: outcome.reason });
+      await writeDebug({ ...debug, deliveryMode: "original-only", skipped: outcome.reason });
       return 0;
     }
 
-    process.stdout.write(`${JSON.stringify(buildCodexReplacementOutput(outcome.result.inlineText, outcome.result.rawRef?.id))}\n`);
-    await writeHookDebug({ ...debug, rewrote: true });
+    const replacement = buildCodexReplacementOutput(
+      outcome.result.inlineText,
+      outcome.result.rawRef?.id,
+      outcome.result.compaction,
+      exitCode,
+      maxInlineChars,
+      noOmit,
+    );
+    if (!replacement) {
+      await writeDebug({ ...debug, deliveryMode: "original-only", skipped: "observation-inline-limit" });
+      return 0;
+    }
+
+    process.stdout.write(`${JSON.stringify(replacement.payload)}\n`);
+    await writeDebug({
+      ...debug,
+      rewrote: true,
+      deliveryMode: "original-plus-additional-context",
+      measurement: "pre-delivery-summary-characters",
+      feedbackTruncated: replacement.truncated,
+    });
     return 0;
   } catch (error) {
-    await writeHookDebug({
+    await writeDebug({
       ...debug,
+      deliveryMode: "original-only",
       skipped: "hook-error",
       error: error instanceof Error ? error.message : String(error),
     });

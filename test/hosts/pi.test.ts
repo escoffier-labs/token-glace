@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -10,6 +10,7 @@ import { doctorPiExtension, installPiExtension, uninstallPiExtension } from "../
 const tempDirs: string[] = [];
 const originalPath = process.env.PATH;
 const originalPiAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalArtifactDir = process.env.TOKENJUICE_ARTIFACT_DIR;
 
 afterEach(async () => {
   process.env.PATH = originalPath;
@@ -17,6 +18,11 @@ afterEach(async () => {
     delete process.env.PI_CODING_AGENT_DIR;
   } else {
     process.env.PI_CODING_AGENT_DIR = originalPiAgentDir;
+  }
+  if (originalArtifactDir === undefined) {
+    delete process.env.TOKENJUICE_ARTIFACT_DIR;
+  } else {
+    process.env.TOKENJUICE_ARTIFACT_DIR = originalArtifactDir;
   }
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -46,6 +52,7 @@ async function installLocalTestExtension(
   options: {
     agentSettings?: unknown;
     projectSettings?: unknown;
+    skipCommandNames?: string[];
   } = {},
 ) {
   const extensionPath = join(home, "tokenjuice.js");
@@ -54,6 +61,9 @@ async function installLocalTestExtension(
   process.env.PATH = "";
   const agentDir = join(home, ".pi-agent");
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  const artifactDir = join(home, "artifacts");
+  process.env.TOKENJUICE_ARTIFACT_DIR = artifactDir;
+  await mkdir(artifactDir, { recursive: true });
 
   await mkdir(join(home, "dist", "cli"), { recursive: true });
   await writeFile(localCliPath, scriptSource, "utf8");
@@ -72,6 +82,7 @@ async function installLocalTestExtension(
     local: true,
     binaryPath: localCliPath,
     nodePath: process.execPath,
+    skipCommandNames: options.skipCommandNames,
   });
 
   const imported = await import(pathToFileURL(extensionPath).href + `?t=${Date.now()}-${Math.random()}`);
@@ -145,6 +156,18 @@ describe("installPiExtension", () => {
     expect(extensionSource).not.toContain("reduceJsonCommand");
     expect(extensionSource).not.toContain("tokenjuice-runtime.js");
     expect(await readOptional(join(agentDir, "extensions", "tokenjuice-runtime.js"))).toBeUndefined();
+  });
+
+  it("embeds deduplicated skipped command names", async () => {
+    const home = await createTempDir();
+    const extensionPath = join(home, "tokenjuice.js");
+
+    await installPiExtension(extensionPath, {
+      skipCommandNames: ["rtk", "other", "rtk"],
+    });
+
+    const extensionSource = await readFile(extensionPath, "utf8");
+    expect(extensionSource).toContain(`"skipCommandNames": [\n    "rtk",\n    "other"\n  ]`);
   });
 
   it("removes the legacy sibling runtime file during install", async () => {
@@ -544,6 +567,10 @@ describe("installPiExtension", () => {
       `,
     );
 
+    // The live directory may hold very many files and other processes may write to it while this
+    // test runs, so check it by the artifact's own name instead of listing it or comparing mtimes.
+    const defaultArtifactDir = join(homedir(), ".tokenjuice", "artifacts");
+
     const result = await handlers.get("tool_result")?.(
       {
         toolName: "bash",
@@ -567,6 +594,11 @@ describe("installPiExtension", () => {
 
     expect(result?.content[0].text).toContain("M: src/hosts/pi/extension/runtime.ts");
     expect(result?.content[0].text).toContain("tokenjuice compacted bash output");
+    expect(result?.content[0].text).toContain("raw artifact: tj_");
+    const rawName = (await readdir(join(home, "artifacts"))).find((name) => /^tj_.*\.txt$/u.test(name));
+    expect(rawName).toBeDefined();
+    expect(await readFile(join(home, "artifacts", rawName ?? ""), "utf8")).toContain("On branch feat/pi-extension");
+    expect(await readOptional(join(defaultArtifactDir, rawName ?? ""))).toBeUndefined();
     expect(await readOptional(markerPath)).toBeUndefined();
   });
 
@@ -921,6 +953,30 @@ describe("installPiExtension", () => {
       ),
     ).rejects.toThrow(`tokenjuice failed to stat bash full output file ${missingOutputPath}`);
     expect(await readOptional(markerPath)).toBeUndefined();
+  });
+
+  it("keeps configured commands raw", async () => {
+    const home = await createTempDir();
+    const { handlers, fakeCtx } = await installLocalTestExtension(
+      home,
+      "process.exit(7);",
+      { skipCommandNames: ["rtk"] },
+    );
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "bash",
+        input: { command: "cd /repo && env DEBUG=1 bash -lc 'rtk git status'" },
+        content: [{
+          type: "text",
+          text: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
+        }],
+        details: { fullOutputPath: join(home, "missing-output.txt") },
+      },
+      fakeCtx,
+    );
+
+    expect(result).toBeUndefined();
   });
 
   it("skips file-content inspection commands before reading fullOutputPath", async () => {

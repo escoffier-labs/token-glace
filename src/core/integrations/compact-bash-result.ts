@@ -1,6 +1,14 @@
+import {
+  getCommandName,
+  getEffectiveCommandArgv,
+  stripLeadingCdPrefix,
+  stripLeadingEnvAssignments,
+  tokenizeCommand,
+  unwrapShellRunner,
+} from "../command.js";
 import { getInspectionCommandSkipReason, getSafeRepositoryInventorySourceArgv } from "../inventory-safety.js";
 import { readNoOmissionFromEnv } from "../env.js";
-import { buildInspectionSummary } from "../reduce-inspection-summary.js";
+import { shouldRecordStats, storeArtifact } from "../artifacts.js";
 import { reduceExecution } from "../reduce.js";
 import { getCompactionSkipReason, type RewritePolicyOptions } from "./rewrite-policy.js";
 
@@ -16,16 +24,21 @@ export type CompactBashResultInput = {
   exitCode?: number;
   maxInlineChars?: number;
   noOmit?: boolean;
+  allowOmit?: boolean;
   storeRaw?: boolean;
+  recordStats?: boolean;
+  storeDir?: string;
   metadata?: Record<string, unknown>;
   inspectionPolicy?: InspectionCommandPolicy;
   /** @deprecated use inspectionPolicy instead. */
   skipInspectionCommands?: boolean;
+  skipCommandNames?: readonly string[];
 } & RewritePolicyOptions;
 
-export type CompactBashResultKeepReason =
+type CompactBashResultKeepReason =
   | "empty-output"
   | InspectionCommandSkipReason
+  | "configured-command"
   | "unsupported"
   | "no-compaction"
   | "low-savings-compaction"
@@ -59,15 +72,168 @@ export function getOutputAwareInspectionSkipReason(
   executionInput: ToolExecutionInput,
 ): InspectionCommandSkipReason | null {
   const command = executionInput.command ?? "";
-  const rawText = executionInput.combinedText ?? "";
-  const inspectionSkipReason = getInspectionCommandSkipReason(command, policy);
-  if (
-    inspectionSkipReason === "file-content-inspection-command"
-    && buildInspectionSummary(executionInput, rawText)
-  ) {
+  return getInspectionCommandSkipReason(command, policy);
+}
+
+const SIMPLE_COMMAND_WRAPPERS = new Set(["nohup", "builtin", "exec", "noglob", "nocorrect"]);
+
+// `uv run` options that take a separate value argument (from `uv run --help`, uv 0.13.6).
+const UV_RUN_VALUE_OPTIONS = new Set([
+  "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--no-editable-package", "--env-file",
+  "-w", "--with", "--with-editable", "--with-requirements", "--package", "--python-platform", "--index",
+  "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--index-strategy",
+  "--keyring-provider", "-P", "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease",
+  "--prerelease-package", "--fork-strategy", "--exclude-newer", "--exclude-newer-package",
+  "--no-sources-package", "--reinstall-package", "--link-mode", "-C", "--config-setting",
+  "--config-settings-package", "--no-build-isolation-package", "--no-build-package", "--no-binary-package",
+  "--cache-dir", "--refresh-package", "-p", "--python", "--color", "--allow-insecure-host", "--directory",
+  "--project", "--config-file",
+]);
+
+function getUvRunCommandArgv(argv: string[]): string[] {
+  let index = 2;
+  while (index < argv.length) {
+    const arg = argv[index] ?? "";
+    if (arg === "--") {
+      return argv.slice(index + 1);
+    }
+    if (!arg.startsWith("-") || arg === "-") {
+      break;
+    }
+    index += !arg.includes("=") && UV_RUN_VALUE_OPTIONS.has(arg) ? 2 : 1;
+  }
+  return argv.slice(index);
+}
+
+function getWrappedCommandArgv(argv: string[]): string[] | null {
+  const wrapper = getCommandName(argv);
+  if (wrapper && SIMPLE_COMMAND_WRAPPERS.has(wrapper)) {
+    return argv.slice(1);
+  }
+  if (wrapper === "uv" && argv[1] === "run") {
+    return getUvRunCommandArgv(argv);
+  }
+  if (wrapper === "command") {
+    let commandIndex = 1;
+    while (commandIndex < argv.length) {
+      const arg = argv[commandIndex];
+      if (arg === "-v" || arg === "-V") {
+        return null;
+      }
+      if (arg === "-p") {
+        commandIndex += 1;
+        continue;
+      }
+      if (arg === "--") {
+        commandIndex += 1;
+      }
+      break;
+    }
+    return argv.slice(commandIndex);
+  }
+
+  let index = 1;
+  if (wrapper === "timeout") {
+    while (index < argv.length) {
+      const arg = argv[index] ?? "";
+      if (["-s", "-k", "--signal", "--kill-after"].includes(arg)) {
+        index += 2;
+      } else if (
+        ["--preserve-status", "--foreground", "-v", "--verbose"].includes(arg)
+        || (arg.length > 2 && (arg.startsWith("-s") || arg.startsWith("-k")))
+        || arg.startsWith("--signal=")
+        || arg.startsWith("--kill-after=")
+      ) {
+        index += 1;
+      } else if (arg === "--") {
+        return index + 1 < argv.length ? argv.slice(index + 2) : null;
+      } else {
+        return argv.slice(index + 1);
+      }
+    }
     return null;
   }
-  return inspectionSkipReason;
+
+  if (wrapper === "nice" || wrapper === "time") {
+    const valueOptions = wrapper === "nice"
+      ? ["-n", "--adjustment"]
+      : ["-f", "-o", "--format", "--output"];
+    const flagOptions = wrapper === "nice"
+      ? []
+      : ["-p", "-a", "-v", "--append", "--verbose", "--portability", "--quiet"];
+    while (index < argv.length) {
+      const arg = argv[index] ?? "";
+      if (valueOptions.includes(arg)) {
+        index += 2;
+      } else if (
+        flagOptions.includes(arg)
+        || wrapper === "nice" && (/^-\d+$/u.test(arg) || arg.startsWith("-n") && arg.length > 2 || arg.startsWith("--adjustment="))
+        || wrapper === "time" && ((arg.startsWith("-f") || arg.startsWith("-o")) && arg.length > 2 || arg.startsWith("--format=") || arg.startsWith("--output="))
+      ) {
+        index += 1;
+      } else if (arg === "--") {
+        return argv.slice(index + 1);
+      } else {
+        return argv.slice(index);
+      }
+    }
+  }
+
+  return null;
+}
+
+
+const WINDOWS_EXECUTABLE_SUFFIXES = [".exe", ".cmd", ".bat", ".com"];
+
+function normalizeSkipCommandName(name: string): string {
+  let normalized = name.trim().toLowerCase();
+  for (const suffix of WINDOWS_EXECUTABLE_SUFFIXES) {
+    if (normalized.endsWith(suffix)) {
+      normalized = normalized.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return normalized;
+}
+
+export function shouldSkipCommand(command: string, skipCommandNames?: readonly string[]): boolean {
+  if (!skipCommandNames?.length) {
+    return false;
+  }
+
+  let candidate = command;
+  let argv: string[] = [];
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    if (candidate) {
+      candidate = stripLeadingCdPrefix(candidate);
+      const effectiveArgv = getEffectiveCommandArgv({ command: candidate });
+      argv = effectiveArgv.length > 0
+        ? effectiveArgv
+        : stripLeadingEnvAssignments(tokenizeCommand(candidate));
+      candidate = "";
+    }
+    const shellBody = unwrapShellRunner({ argv });
+    if (shellBody) {
+      candidate = shellBody;
+      continue;
+    }
+    const commandName = getCommandName(argv);
+    if (
+      commandName
+      && skipCommandNames.some(
+        (skipName) => normalizeSkipCommandName(skipName) === normalizeSkipCommandName(commandName),
+      )
+    ) {
+      return true;
+    }
+    const wrappedArgv = getWrappedCommandArgv(argv);
+    if (!wrappedArgv?.length) {
+      return false;
+    }
+    argv = wrappedArgv;
+  }
+
+  return false;
 }
 
 export async function compactBashResult(input: CompactBashResultInput): Promise<CompactBashResultOutput> {
@@ -103,6 +269,15 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
     ...(input.metadata ? { metadata: input.metadata } : {}),
   };
 
+  if (shouldSkipCommand(command, input.skipCommandNames)) {
+    return {
+      action: "keep",
+      reason: "configured-command",
+      rawText,
+      usedTrustedFullText,
+    };
+  }
+
   const inspectionSkipReason = getOutputAwareInspectionSkipReason(resolveInspectionPolicy(input), executionInput);
   if (inspectionSkipReason) {
     return {
@@ -113,12 +288,21 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
     };
   }
 
+  const storeDir = typeof input.storeDir === "string" && input.storeDir.trim()
+    ? input.storeDir.trim()
+    : undefined;
+  const recordStats = input.recordStats ?? shouldRecordStats();
   const options: ReduceOptions = {
     ...(typeof input.cwd === "string" && input.cwd.trim() ? { cwd: input.cwd } : {}),
     ...(typeof input.maxInlineChars === "number" ? { maxInlineChars: input.maxInlineChars } : {}),
-    ...(readNoOmissionFromEnv() || input.noOmit ? { noOmit: true } : {}),
-    recordStats: true,
-    ...(input.storeRaw ? { store: true } : {}),
+    ...(input.noOmit || (!input.allowOmit && readNoOmissionFromEnv()) ? { noOmit: true } : {}),
+    // store:true inside reduceExecution writes before this function can keep the output, so a
+    // storeRaw caller stores below, only after the rewrite decision. A keep from a storeRaw
+    // caller then leaves no raw file and no stats entry: recordStats stays off for that call
+    // as well. Callers without storeRaw keep the stats policy unchanged: an explicit
+    // input.recordStats wins, otherwise stats are on unless TOKENJUICE_STATS disables them.
+    recordStats: input.storeRaw ? false : recordStats,
+    ...(storeDir ? { storeDir } : {}),
   };
 
   const result = await reduceExecution(executionInput, options);
@@ -133,10 +317,33 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
     };
   }
 
+  if (!input.storeRaw) {
+    return {
+      action: "rewrite",
+      rawText,
+      usedTrustedFullText,
+      result,
+    };
+  }
+
+  const rawRef = await storeArtifact(
+    {
+      input: executionInput,
+      rawText,
+      classification: result.classification,
+      stats: result.stats,
+      recordStats,
+    },
+    storeDir,
+  );
+
   return {
     action: "rewrite",
     rawText,
     usedTrustedFullText,
-    result,
+    result: {
+      ...result,
+      rawRef,
+    },
   };
 }

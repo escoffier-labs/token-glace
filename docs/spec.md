@@ -72,6 +72,8 @@ for contributor guidance on introducing a new host integration, see `docs/integr
 host adapters choose an inspection policy before calling the shared compactor. the Codex, Claude Code, and pi adapters use the safe-inventory policy:
 
 - exact file-content reads stay raw (`cat`, `sed`, `head`, `tail`, `nl`, `bat`, `jq`, `yq`)
+- size and prose shape do not change this. a file read over 4,000 characters stays raw
+- a command whose text contains `package-lock.json` is the exception. it may be replaced by the package-lock summary
 - standalone repository inventory commands can compact when they are inventory-only (`find`, `ls`, `rg --files`, `git ls-files`, `fd`)
 - inventory pipelines compact only when downstream commands are structural stdin transforms (`sort`, `head`, `tail`, `uniq`)
 - source inventory commands that execute other commands, such as `find ... -exec ...` or `fd --exec ...`, stay raw
@@ -162,9 +164,11 @@ summarize stored artifact history:
 tokenjuice stats
 tokenjuice stats --format json
 tokenjuice stats --timezone utc
+tokenjuice stats --limit 1000
 ```
 
 daily stats are bucketed in the local timezone by default. pass `--timezone utc` for UTC buckets or an IANA timezone such as `America/New_York` for explicit reporting.
+stats read the bounded metadata-segment store only. output identifies legacy sidecars as excluded, reports partial coverage, and returns a cursor when another page is available. set `TOKENJUICE_STATS=off`, or pass `--no-stats` to `reduce` or `wrap`, to suppress metadata and hook-debug telemetry writes.
 
 ### install
 
@@ -215,6 +219,7 @@ tokenjuice install forgecode
 tokenjuice install gitlab-duo
 tokenjuice install greptile
 tokenjuice install grok-build
+tokenjuice install grok-bot
 tokenjuice install grok-cli
 tokenjuice install gptme
 tokenjuice install jean2
@@ -294,6 +299,7 @@ tokenjuice doctor firebase-studio
 tokenjuice doctor gitlab-duo
 tokenjuice doctor greptile
 tokenjuice doctor grok-build
+tokenjuice doctor grok-bot
 tokenjuice doctor grok-cli
 tokenjuice doctor gptme
 tokenjuice doctor jean2
@@ -378,7 +384,7 @@ supported host hooks:
 | Codegen | `tokenjuice install codegen` | `AGENTS.md` | ✴️ Beta. Inserts a marker-delimited instruction block into the current git/project root that tells Codegen agents to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Codegen rule files do not intercept command output; see `docs/codegen-integration.md` |
 | Coder Agents | `tokenjuice install coder-agents` | `.agents/skills/tokenjuice/SKILL.md` | ✴️ Beta. Writes a Coder workspace skill with `name: tokenjuice` frontmatter that tells Coder Agents to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Coder Agents skills do not intercept command output; see `docs/coder-agents-integration.md` |
 | CodeRabbit | `tokenjuice install coderabbit` | `.coderabbit.yaml` | ✴️ Beta. Inserts marker-delimited `reviews.path_instructions` guidance that tells CodeRabbit review, finishing-touch, chat, and tool workflows to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because CodeRabbit config does not intercept review comments or command output; see `docs/coderabbit-integration.md` |
-| CodeBuddy (Linux/macOS/WSL) | `tokenjuice install codebuddy` | `~/.codebuddy/settings.json` | Uses `PreToolUse` shell input rewriting (same pattern as Cursor) to route Bash commands through `tokenjuice wrap`; preserves unrelated hooks that share a matcher group with the tokenjuice entry; `tokenjuice install codebuddy --local` is available for repo-local verification; native Windows shell interception is intentionally blocked for now; see `docs/codebuddy-integration.md` |
+| CodeBuddy (Linux/macOS/WSL) | `tokenjuice install codebuddy` | `~/.codebuddy/settings.json` | Uses `PreToolUse` shell input rewriting (same pattern as Cursor) to route Bash commands through `tokenjuice wrap`; preserves unrelated hooks that share a matcher group with the tokenjuice entry; open `/hooks` and review an external settings change for the current session, or start a new CodeBuddy session; doctor verifies persisted config, not active-session activation; `tokenjuice install codebuddy --local` is available for repo-local verification; native Windows shell interception is intentionally blocked for now; see `docs/codebuddy-integration.md` |
 | Command Code | `tokenjuice install command-code` | `~/.commandcode/settings.json` / `.commandcode/settings.json` | ✴️ Beta. Uses a `PostToolUse` hook with matcher `shell`; compacted context is injected through `hookSpecificOutput.additionalContext` alongside the original shell output; `tokenjuice install command-code --local` is available for repo-local verification; see `docs/command-code-integration.md` |
 | Codex CLI | `tokenjuice install codex` | `~/.codex/hooks.json` | `tokenjuice install codex --local` is available for repo-local verification |
 | Continue | `tokenjuice install continue` | `.continue/rules/tokenjuice.md` | ✴️ Beta. Installs a workspace rule that tells Continue agents to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Continue rules do not intercept tool output; see `docs/continue-integration.md` |
@@ -398,6 +404,7 @@ supported host hooks:
 | Goose | `tokenjuice install goose` | `.goosehints` | ✴️ Beta. Inserts a marker-delimited hints block that tells Goose to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Goose hints do not intercept tool output; restart the Goose session after install; see `docs/goose-integration.md` |
 | Greptile | `tokenjuice install greptile` | `.greptile/rules.md` | ✴️ Beta. Inserts marker-delimited plain Markdown reviewer rules that tell Greptile to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Greptile rules do not intercept review comments or command output; see `docs/greptile-integration.md` |
 | Grok Build | `tokenjuice install grok-build` | `AGENTS.md` | ✴️ Beta. Inserts a marker-delimited instruction block into the current git/project root that tells Grok Build to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Grok Build instructions do not intercept command output; see `docs/grok-build-integration.md` |
+| Grok Bot | `tokenjuice install grok-bot` | `.cursor/rules/tokenjuice.mdc` | ✴️ Beta. Installs a Cursor-format workspace rule with `alwaysApply: true` metadata that tells Grok Bot to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed. Grok Bot owns execution and output delivery; live rule loading is not yet verified; see `docs/grok-bot-integration.md` |
 | Grok CLI | `tokenjuice install grok-cli` | `~/.grok/user-settings.json` | ✴️ Beta. Uses a user-level `PostToolUse` hook for the `bash` tool; compacted context is injected alongside the original output; `tokenjuice install grok-cli --local` is available for repo-local verification; see `docs/grok-cli-integration.md` |
 | gptme | `tokenjuice install gptme` | `AGENTS.md` | ✴️ Beta. Inserts a marker-delimited instruction block into the current git/project root that tells gptme to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because gptme agent instruction files do not intercept tool output; see `docs/gptme-integration.md` |
 | GitHub Copilot coding agent | `tokenjuice install copilot-agent` | `.github/hooks/tokenjuice-agent.json` | Uses a repo-local `postToolUse` hook for shell output so Copilot coding agent receives compacted terminal output; `tokenjuice install copilot-agent --local` is available for repo-local verification; see `docs/copilot-agent-integration.md` |
@@ -428,7 +435,7 @@ supported host hooks:
 | Plandex | `tokenjuice install plandex` | `PLANDEX.tokenjuice.md` | ✴️ Beta. Installs a loadable context convention that tells Plandex to use `tokenjuice wrap` for noisy terminal commands, `tokenjuice wrap --raw -- <command>` only when raw bytes are needed, and `tokenjuice wrap -- <command> \| plandex load` when loading noisy output into context; guidance-only, because Plandex context files do not intercept command output; load with `plandex load PLANDEX.tokenjuice.md`; see `docs/plandex-integration.md` |
 | Qodo Code Review | `tokenjuice install qodo` | `.pr_agent.toml` | ✴️ Beta. Inserts marker-delimited `[review_agent]` guideline settings for Qodo's Issues and Compliance agents that tell review, ask, checks, and generated-fix workflows to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Qodo config does not intercept review comments or command output; see `docs/qodo-integration.md` |
 | Qoder CLI | `tokenjuice install qoder` | `AGENTS.md` | ✴️ Beta. Inserts a marker-delimited instruction block into the current git/project root that tells Qoder CLI to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Qoder `AGENTS.md` memory does not intercept command output; see `docs/qoder-integration.md` |
-| pi | `tokenjuice install pi` | `~/.pi/agent/extensions/tokenjuice.js` | `tokenjuice install pi --local` forces the extension bundle to be rebuilt from the current repo source and adds `/tj` controls inside pi |
+| pi | `tokenjuice install pi` | `~/.pi/agent/extensions/tokenjuice.js` | `tokenjuice install pi --local` forces the extension bundle to be rebuilt from the current repo source and adds `/tj` controls inside pi; every rewrite stores its raw bytes as an artifact (see the artifact model) |
 | Qwen Code | `tokenjuice install qwen-code` | `.qwen/settings.json` | ✴️ Beta. Uses a project-local `PostToolUse` hook for shell tools; compacted context is injected alongside the original output; `tokenjuice install qwen-code --local` is available for repo-local verification; see `docs/qwen-code-integration.md` |
 | Replit Agent | `tokenjuice install replit` | `replit.md` | ✴️ Beta. Inserts a marker-delimited instruction block into the current git/project root that tells Replit Agent to use `tokenjuice wrap` for noisy terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Replit `replit.md` project context does not intercept command output and Agent may update the file as project knowledge changes; see `docs/replit-integration.md` |
 | Roo Code | `tokenjuice install roo` | `.roo/rules/tokenjuice.md` | ✴️ Beta. Inserts a marker-delimited workspace rule that tells Roo to use `tokenjuice wrap` for noisy `execute_command` terminal commands and `tokenjuice wrap --raw -- <command>` only when raw bytes are needed; guidance-only, because Roo workspace rules do not intercept tool output; see `docs/roo-integration.md` |
@@ -477,20 +484,27 @@ this gives a sane default without forcing people to fork the package for one wei
 
 ## artifact model
 
-artifacts are file-backed in v1:
+raw artifacts are file-backed in v1:
 
 - one raw text file
-- one metadata JSON file
+- one metadata JSON sidecar
 
 default storage is `~/.tokenjuice/artifacts`. set `TOKENJUICE_ARTIFACT_DIR`
 to override that base directory, or pass `storeDir` through the library/cli
 surfaces that already support it.
 
-that is intentionally boring. boring is good here.
+raw retention is opt-in. statistics use daily, sharded JSONL segments under
+`metadata-v1/`, capped by default at 14 days, 8 shards per day, and 1 MiB per
+segment. readers are paged and bounded by file count and segment size. metadata
+references identify `metadataFormat: "jsonl-segment"` and `metadataRecordId`;
+the shared `metadataPath` is a segment container, not a standalone JSON object.
+
+legacy artifact sidecars remain readable through raw-artifact APIs. stats do not
+scan, migrate, rewrite, or delete them.
 
 ## reliability priorities
 
-- keep raw artifact storage opt-in
+- keep raw artifact storage opt-in, with one named exception: the pi extension stores the raw bytes of every rewrite (default `~/.tokenjuice/artifacts`, override with `TOKENJUICE_ARTIFACT_DIR`) so its compaction notice always names a recoverable artifact; a kept output stores nothing
 - store raw artifacts with private permissions where the platform supports it
 - validate artifact ids before lookup
 - bound captured output and direct input sizes so hostile or accidental huge logs do not blow up memory

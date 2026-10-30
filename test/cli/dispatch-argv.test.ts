@@ -84,14 +84,14 @@ describe("argv dispatch contracts", () => {
   it("stats exits 0", async () => {
     const result = await runDist(["stats", "--by-source"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.startsWith("entries:")).toBe(true);
+    expect(result.stdout).toMatch(/^entries: /m);
     expect(result.stderr).toBe("");
   });
 
   it("doctor default exits 0", async () => {
     const result = await runDist(["doctor"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.startsWith("entries:")).toBe(true);
+    expect(result.stdout).toMatch(/^entries: /m);
     expect(result.stderr).toBe("");
   });
 

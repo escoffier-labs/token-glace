@@ -3,8 +3,8 @@ import { hasMultipleSubstantiveShellCommands } from "./command-match.js";
 import { classifyExecution, resolveRuleMatch } from "./classify.js";
 import { isFileContentInspectionCommand, isVerbatimConfigInspectionCommand } from "./command-identity.js";
 import { normalizeExecutionInput } from "./execution-input.js";
-import { clampTextMiddleWithMetadata, clampTextWithMetadata, countTextChars, dedupeAdjacent, headTail, normalizeLines, pluralize, stripAnsi, trimEmptyEdges } from "./text.js";
-import { storeArtifact, storeArtifactMetadata } from "./artifacts.js";
+import { clampTextMiddleWithMetadata, clampTextWithMetadata, collapseRepeatedEmojiBanner, countTextChars, dedupeAdjacent, headTail, normalizeLines, pluralize, stripAnsi, trimEmptyEdges } from "./text.js";
+import { storeArtifact, tryStoreArtifactMetadata } from "./artifacts.js";
 import { NO_COMPACTION_METADATA, mergeCompactionMetadata, type CompactionMetadata } from "./compaction-metadata.js";
 import { buildGithubActionsFailureSummary } from "./github-actions-summary.js";
 import { rewriteGhLines, rewriteGitDiffLines, rewriteGitStatusLines, rewriteSearchLines } from "./reduce-formatters.js";
@@ -16,6 +16,7 @@ import type { CompactResult, CompiledRule, ReduceOptions, ToolExecutionInput } f
 const TINY_OUTPUT_MAX_CHARS = 240;
 const SMALL_OUTPUT_PASSTHROUGH_MIN_SAVED_CHARS = 120;
 const SMALL_OUTPUT_PASSTHROUGH_MAX_RATIO = 0.75;
+const FAILURE_SEVERITY_FACTS = new Set(["error", "warning"]);
 
 function buildRawText(input: ToolExecutionInput): string {
   if (input.combinedText) {
@@ -68,6 +69,13 @@ function applyRule(
     lines = normalizeLines(stripAnsi(lines.join("\n")));
   }
 
+  let rewriteCompaction: CompactionMetadata | undefined;
+  if (!noOmit && rule.id === "generic/fallback") {
+    const collapsed = collapseRepeatedEmojiBanner(lines);
+    lines = collapsed.lines;
+    rewriteCompaction = mergeCompactionMetadata(rewriteCompaction, collapsed.compaction);
+  }
+
   const outputMatchText = trimEmptyEdges(lines).join("\n");
   const matchedOutput = compiledRule.compiled.outputMatches.find((entry) => entry.pattern.test(outputMatchText));
   if (!noOmit && matchedOutput) {
@@ -106,7 +114,6 @@ function applyRule(
     lines = rewriteGitStatusLines(lines);
   }
   const preRewriteLines = [...lines];
-  let rewriteCompaction: CompactionMetadata | undefined;
   if (rule.id === "cloud/gh") {
     counterLines = rewriteGhLines(counterLines, input, noOmit).lines;
     const rewritten = rewriteGhLines(lines, input, noOmit);
@@ -220,15 +227,20 @@ function isTerseDiscoveryCommand(classification: { family: string }, input: Tool
 }
 
 function formatInline(
-  classification: { family: string },
+  classification: { family: string; matchedReducer?: string },
   input: ToolExecutionInput,
   summary: string,
   facts: Record<string, number>,
   noOmit = false,
 ): string {
+  const neutralizeSeverityFacts = classification.matchedReducer === "generic/fallback"
+    && input.exitCode === 0;
   const factParts = Object.entries(facts)
     .filter(([, count]) => count > 0)
-    .map(([name, count]) => pluralize(count, name));
+    .map(([name, count]) => pluralize(
+      count,
+      neutralizeSeverityFacts && FAILURE_SEVERITY_FACTS.has(name) ? `${name} mention` : name,
+    ));
 
   const lines: string[] = [];
   if (input.exitCode && input.exitCode !== 0) {
@@ -363,6 +375,7 @@ export async function reduceExecutionWithRules(
             input: normalizedInput,
             rawText,
             classification,
+            ...(opts.recordStats !== undefined ? { recordStats: opts.recordStats } : {}),
             stats: {
               rawChars: measuredRawChars,
               reducedChars: measuredRawChars,
@@ -373,7 +386,7 @@ export async function reduceExecutionWithRules(
         )
       : undefined;
     if (!opts.store && opts.recordStats) {
-      await storeArtifactMetadata(
+      await tryStoreArtifactMetadata(
         {
           input: normalizedInput,
           rawText,
@@ -425,6 +438,7 @@ export async function reduceExecutionWithRules(
             input: normalizedInput,
             rawText,
             classification: summaryClassification,
+            ...(opts.recordStats !== undefined ? { recordStats: opts.recordStats } : {}),
             stats,
           },
           opts.storeDir,
@@ -432,7 +446,7 @@ export async function reduceExecutionWithRules(
       : undefined;
 
     if (!opts.store && opts.recordStats) {
-      await storeArtifactMetadata(
+      await tryStoreArtifactMetadata(
         {
           input: normalizedInput,
           rawText,
@@ -456,7 +470,7 @@ export async function reduceExecutionWithRules(
 
   if (classification.matchedReducer === "generic/fallback" && isFileContentInspectionCommand(normalizedInput)) {
     if (!opts.store && opts.recordStats) {
-      await storeArtifactMetadata(
+      await tryStoreArtifactMetadata(
         {
           input: normalizedInput,
           rawText,
@@ -508,6 +522,7 @@ export async function reduceExecutionWithRules(
             input: normalizedInput,
             rawText,
             classification,
+            ...(opts.recordStats !== undefined ? { recordStats: opts.recordStats } : {}),
             stats,
           },
           opts.storeDir,
@@ -515,7 +530,7 @@ export async function reduceExecutionWithRules(
       : undefined;
 
     if (!opts.store && opts.recordStats) {
-      await storeArtifactMetadata(
+      await tryStoreArtifactMetadata(
         {
           input: normalizedInput,
           rawText,
@@ -558,6 +573,7 @@ export async function reduceExecutionWithRules(
               input: normalizedInput,
               rawText,
               classification: jsonClassification,
+              ...(opts.recordStats !== undefined ? { recordStats: opts.recordStats } : {}),
               stats,
             },
             opts.storeDir,
@@ -565,7 +581,7 @@ export async function reduceExecutionWithRules(
         : undefined;
 
       if (!opts.store && opts.recordStats) {
-        await storeArtifactMetadata(
+        await tryStoreArtifactMetadata(
           {
             input: normalizedInput,
             rawText,
@@ -588,7 +604,13 @@ export async function reduceExecutionWithRules(
   }
 
   const { summary, facts, compaction } = applyRule(matchedRule, reducerInput, rawText, opts.noOmit);
-  const compactText = formatInline(classification, reducerInput, summary || "(no output)", facts, opts.noOmit);
+  const compactText = formatInline(
+    classification,
+    reducerInput,
+    summary || "(no output)",
+    facts,
+    opts.noOmit,
+  );
   const selectedText = selectInlineText(classification, reducerInput, rawText, compactText, maxInlineChars, compaction, opts.noOmit);
   const clamp = classification.family === "help" || selectedText.text.includes("\n") ? clampTextMiddleWithMetadata : clampTextWithMetadata;
   const inlineText = clamp(selectedText.text, maxInlineChars, opts.noOmit);
@@ -604,6 +626,7 @@ export async function reduceExecutionWithRules(
           input: normalizedInput,
           rawText,
           classification,
+          ...(opts.recordStats !== undefined ? { recordStats: opts.recordStats } : {}),
           stats,
         },
         opts.storeDir,
@@ -611,7 +634,7 @@ export async function reduceExecutionWithRules(
     : undefined;
 
   if (!opts.store && opts.recordStats) {
-    await storeArtifactMetadata(
+    await tryStoreArtifactMetadata(
       {
         input: normalizedInput,
         rawText,

@@ -63,7 +63,7 @@ function countWrapInvocations(argv: string[]): number {
  * rather than at a downstream structural assertion.
  */
 export function parseWrappedCommand(raw: string): WrappedCommand {
-  const argv = parseShellWords(raw);
+  const argv = parseShellWords(raw, "linux");
   if (argv.length === 0) {
     throw new Error(`parseWrappedCommand: empty argv from ${JSON.stringify(raw)}`);
   }
@@ -109,7 +109,7 @@ export function parseWrappedCommand(raw: string): WrappedCommand {
   }
 
   const inner = innerTokens[0] ?? "";
-  const innerArgv = parseShellWords(inner);
+  const innerArgv = parseShellWords(inner, "linux");
 
   // A correctly wrapped command has wrapDepth === 1: the outer invocation
   // counts, and nothing inside the shell payload should recursively re-wrap.

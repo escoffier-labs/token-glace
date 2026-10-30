@@ -36,7 +36,7 @@ Keep generated files out of manual edits. If you change built-in rule data, rely
 
 ## Host integrations
 
-Post-tool adapters that can replace shell output (codex, pi, opencode, openclaw, and other hook-based hosts) route through the shared primitive `compactBashResult` in [src/core/integrations/compact-bash-result.ts](src/core/integrations/compact-bash-result.ts). New compaction behavior belongs in `src/core/`, not in an adapter. Pre-tool rewriters (codebuddy, cursor, vscode-copilot, opt-in claude-code, and similar hosts) funnel commands through `token-glace wrap` / `tokenjuice wrap`. Shared wrap helpers live in [src/hosts/shared/pre-tool-wrap.ts](src/hosts/shared/pre-tool-wrap.ts); some hosts implement the same wrap locally. When adding or changing a host, see [docs/integration-playbook.md](docs/integration-playbook.md) for the install/doctor/uninstall checklist and update the hardcoded host list in [src/cli/main.ts](src/cli/main.ts).
+Post-tool adapters that can replace shell output (codex, pi, opencode, openclaw, and other hook-based hosts) route through the shared primitive `compactBashResult` in [src/core/integrations/compact-bash-result.ts](src/core/integrations/compact-bash-result.ts). New compaction behavior belongs in `src/core/`, not in an adapter. Pre-tool rewriters (codebuddy, cursor, vscode-copilot, opt-in claude-code, and similar hosts) funnel commands through `token-glace wrap` / `tokenjuice wrap`. Shared wrap helpers live in [src/hosts/shared/pre-tool-wrap.ts](src/hosts/shared/pre-tool-wrap.ts); some hosts implement the same wrap locally. When adding or changing a host, see [docs/integration-playbook.md](docs/integration-playbook.md) for the install/doctor/uninstall checklist, then register the host in the CLI handler maps ([src/cli/install-commands.ts](src/cli/install-commands.ts), [src/cli/uninstall-commands.ts](src/cli/uninstall-commands.ts), [src/cli/doctor-commands.ts](src/cli/doctor-commands.ts)), update the supported-host lists in [src/cli/main.ts](src/cli/main.ts), and add it to the transcript test in [test/cli/host-commands.test.ts](test/cli/host-commands.test.ts).
 
 ## Testing Guidelines
 
@@ -71,9 +71,9 @@ Releases are tag-driven and should stay aligned with `package.json`.
 3. Commit the version bump and any required workflow fixes to `main`, then push `main`.
 4. Create and push an annotated tag: `git tag -a v0.6.0 -m "v0.6.0"` and `git push origin v0.6.0`.
 5. Watch the `Release` GitHub Actions workflow and confirm the GitHub release is published with the `.tar.gz`, `.deb`, `.rpm`, `sha256sums.txt`, and `token-glace.rb` assets.
-6. Confirm the `homebrew-tap.yml` sync workflow succeeds and that `vincentkoc/tap` points at the new tarball and SHA.
+6. If a Homebrew tap is configured, manually dispatch `homebrew-tap.yml` with the release tag and confirm the tap formula points at the new tarball and SHA. The release workflow no longer dispatches it.
 
-If a release tag was pushed against a broken workflow, fix `main`, delete and recreate the tag, then rerun the release from the corrected commit.
+For formula-only recovery against an existing immutable tarball, download and verify the published checksum, then run `pnpm release:formula -- --published-tarball-sha256 <64-lowercase-hex>`. This mode is offline and does not require a local tarball. Replace only the broken formula asset; do not retag or republish unrelated artifacts.
 
 ## Commit & Pull Request Guidelines
 

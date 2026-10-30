@@ -8,6 +8,32 @@
 
 ### Fixes
 
+- OpenCode: register compaction through both loaders. V1 (1.18.29+) calls `server()` for the `tool.execute.after` hook map, and V2 calls `setup(ctx)`, which now registers `ctx.tool.hook("execute.after", ...)` for completed `shell` results. Upstream's `{ id, setup }` export registered nothing on either version.
+- Codex: classify `describe` and `desc` as schema output only inside a SQL client, so `kubectl describe`, `aws ... describe-*`, and `git describe` output is compacted again.
+- Name the host and settings path when Claude Code, CodeBuddy, or Droid settings contain malformed JSON.
+- Pi: parse `uv run` options such as `--no-sync`, `--with <pkg>`, `--python=3.12`, and `--` before matching `--skip-command` names, so `uv run --no-sync pytest` honors `--skip-command pytest`.
+- Align the local host E2E check with the Codex hook contract: a recovery reference appears only when a raw artifact was stored.
+- Require `--release-version` with `--published-tarball-sha256` so recovered Homebrew formulas pair the checksum with the matching release URL, and fail the manual tap sync when its token or repository is not configured.
+- Pin `.nvmrc` to Node 22.12.0, the minimum in `engines`.
+
+### Upstream sync
+
+Merge [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) v0.8.2 through v0.8.5 plus unreleased `main` (through `89f0b25`). Upstream PR numbers below refer to that repository. Claude Code keeps this fork's PostToolUse default; upstream's PreToolUse-only install and its no-op PostToolUse shim are not taken.
+
+- OpenClaw: compact `gateway_exec` and `node_exec` like `exec`. (#241)
+- OpenCode: export the V2 `{ id, setup }` plugin shape, and tolerate directory handles without `close` on Bun. (#240, #239)
+- Pi: skip configured commands with `--skip-command`, matched by case-insensitive name and executable suffix. (#235, #242)
+- Keep exact file-content reads raw and drop the large-document summarizer; store raw bytes only after a rewrite. (#244)
+- Preserve symlinked Claude Code, CodeBuddy, and Droid settings targets and file permissions when installing or removing hooks. (#232)
+- Codex: fail open on oversized hook input, pin the Node runtime, honor the configured omission policy, and omit recovery hints for non-authoritative rewrites. (#211, #213, #214, #218)
+- Bound metadata and Codex telemetry with size-capped JSONL segments, and add paged stats reads (`--limit`, `--cursor`). (#228)
+- Collapse repeated emoji banners, render successful error and warning counts as neutral mentions, keep raw output available when stats storage fails, and quote Windows `-lc` payloads for the POSIX shell. (#216, #219, #220, #221)
+- Dispatch install, uninstall, and doctor targets through handler maps (`src/cli/*-commands.ts`) with pinned per-host transcripts. (#245 to #248)
+- Generate Homebrew formulas with verified local checksums and `--published-tarball-sha256` recovery. The release workflow no longer dispatches `homebrew-tap.yml`; run it manually when a tap is configured. (#226)
+- Restrict the CI `GITHUB_TOKEN` to read-only, and update Vitest to 5.0.5, Vite to 8.3.5, oxlint, publint, `@types/node` 22, and pnpm overrides that clear the dev-dependency audit advisories. (#243, #252, #258 to #262, #265)
+
+### Fixes
+
 - Preserve Claude Code Bash response metadata and image-valued output, accept host-sized hook payloads, skip output requested through Token Glace or tokenjuice raw/full modes, and validate every managed Claude Code hook during doctor checks.
 
 ## 0.8.3 - 2026-07-01

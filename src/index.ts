@@ -1,4 +1,4 @@
-export { ARTIFACT_DIR_ENV, getArtifact, isValidArtifactId, listArtifactMetadata, listArtifacts, resolveArtifactBaseDir, storeArtifact, storeArtifactMetadata } from "./core/artifacts.js";
+export { ARTIFACT_DIR_ENV, STATS_ENABLED_ENV, getArtifact, isValidArtifactId, listArtifactMetadata, listArtifactMetadataPage, listArtifacts, resolveArtifactBaseDir, shouldRecordStats, storeArtifact, storeArtifactMetadata } from "./core/artifacts.js";
 export { buildAnalysisEntry, discoverCandidates, doctorArtifacts, statsArtifacts } from "./core/analysis.js";
 export { classifyExecution } from "./core/classify.js";
 export { normalizeCommandSignature, normalizeEffectiveCommandSignature, normalizeExecutionInput, tokenizeCommand } from "./core/command.js";
@@ -77,6 +77,7 @@ export { doctorGitLabDuoRule, installGitLabDuoRule, uninstallGitLabDuoRule } fro
 export { doctorGooseHints, installGooseHints, uninstallGooseHints } from "./hosts/goose/index.js";
 export { doctorGreptileRule, installGreptileRule, uninstallGreptileRule } from "./hosts/greptile/index.js";
 export { doctorGrokBuildInstructions, installGrokBuildInstructions, uninstallGrokBuildInstructions } from "./hosts/grok-build/index.js";
+export { doctorGrokBotRule, installGrokBotRule, uninstallGrokBotRule } from "./hosts/grok-bot/index.js";
 export { doctorGrokCliHook, installGrokCliHook, runGrokCliPostToolUseHook, uninstallGrokCliHook } from "./hosts/grok-cli/index.js";
 export { doctorGptmeInstructions, installGptmeInstructions, uninstallGptmeInstructions } from "./hosts/gptme/index.js";
 export { doctorJean2Instructions, installJean2Instructions, uninstallJean2Instructions } from "./hosts/jean2/index.js";
@@ -480,6 +481,12 @@ export type {
   InstallGrokBuildInstructionsResult,
   UninstallGrokBuildInstructionsResult,
 } from "./hosts/grok-build/index.js";
+export type {
+  GrokBotDoctorReport,
+  GrokBotRuleOptions,
+  InstallGrokBotRuleResult,
+  UninstallGrokBotRuleResult,
+} from "./hosts/grok-bot/index.js";
 export type {
   GrokCliDoctorReport,
   GrokCliHookCommandOptions,

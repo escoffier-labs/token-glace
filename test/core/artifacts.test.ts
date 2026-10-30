@@ -1,10 +1,10 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ARTIFACT_DIR_ENV, getArtifact, listArtifactMetadata, listArtifacts, normalizeArtifactSource, resolveArtifactBaseDir, storeArtifact, storeArtifactMetadata } from "../../src/index.js";
+import { ARTIFACT_DIR_ENV, getArtifact, listArtifactMetadata, listArtifactMetadataPage, listArtifacts, normalizeArtifactSource, resolveArtifactBaseDir, storeArtifact, storeArtifactMetadata } from "../../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -64,7 +64,11 @@ describe("artifacts", () => {
     const found = metadata.find((entry) => entry.id === ref.id);
 
     expect(found).toBeDefined();
-    expect(found?.metadataPath).not.toContain(process.env.HOME ?? "~");
+    // TMPDIR can live under $HOME, so compare against the configured and default roots, not $HOME.
+    const envDir = process.env[ARTIFACT_DIR_ENV]?.trim();
+    expect(envDir).toBeTruthy();
+    expect(found?.metadataPath.startsWith(join(envDir ?? "", "/"))).toBe(true);
+    expect(found?.metadataPath.startsWith(join(homedir(), ".tokenjuice"))).toBe(false);
   });
 
   it("prefers explicit storeDir over the env-configured directory", async () => {
@@ -125,6 +129,44 @@ describe("artifacts", () => {
     expect(metadataMode).toBe(0o600);
   });
 
+  it("stores only parsed safe command families in telemetry segments", async () => {
+    const storeDir = await createTempDir();
+    const secret = "TOP_SECRET_VALUE";
+    const privatePath = "/private/worktree";
+    const refs = await Promise.all([
+      storeArtifactMetadata({
+        input: { toolName: "exec", command: `API_TOKEN=${secret} git status`, exitCode: 0 },
+        rawText: "clean",
+        classification: { family: "git", confidence: 1 },
+      }, storeDir),
+      storeArtifactMetadata({
+        input: { toolName: "exec", command: `cd ${privatePath} && pnpm test`, exitCode: 0 },
+        rawText: "passed",
+        classification: { family: "test-results", confidence: 1 },
+      }, storeDir),
+      storeArtifactMetadata({
+        input: { toolName: "exec", command: `$(cat ${privatePath}/token) --dump`, exitCode: 0 },
+        rawText: "opaque",
+        classification: { family: "generic", confidence: 1 },
+      }, storeDir),
+    ]);
+
+    const metadata = await listArtifactMetadata(storeDir);
+    const families = metadata
+      .map((entry) => entry.metadata.commandFamily)
+      .filter((family): family is string => typeof family === "string")
+      .sort();
+    const segmentText = (
+      await Promise.all([...new Set(refs.map((ref) => ref.metadataPath))].map((path) => readFile(path, "utf8")))
+    ).join("\n");
+
+    expect(families).toEqual(["git", "pnpm"]);
+    expect(segmentText).not.toContain(secret);
+    expect(segmentText).not.toContain(privatePath);
+    expect(segmentText).not.toContain("API_TOKEN");
+    expect(segmentText).not.toContain("$(cat");
+  });
+
   it("ignores corrupted metadata files when loading artifact metadata", async () => {
     const storeDir = await createTempDir();
     await writeFile(join(storeDir, "tj_1234567-abcd.json"), JSON.stringify(["bad"]), "utf8");
@@ -138,6 +180,37 @@ describe("artifacts", () => {
 
     const artifact = await getArtifact("tj_1234567-abcd", storeDir);
     expect(artifact).toBeNull();
+  });
+
+  it("excludes and preserves legacy sidecars while reporting bounded coverage", async () => {
+    const storeDir = await createTempDir();
+    const legacyPath = join(storeDir, "tj_1234567-abcd.json");
+    const legacyText = "{\"legacy\":true}\n";
+    await writeFile(legacyPath, legacyText, "utf8");
+    await storeArtifactMetadata(
+      {
+        input: { toolName: "exec", command: "pnpm test", exitCode: 0 },
+        rawText: "test output",
+        classification: { family: "test-results", confidence: 1, matchedReducer: "tests/pnpm-test" },
+      },
+      storeDir,
+    );
+    await storeArtifactMetadata(
+      {
+        input: { toolName: "exec", command: "git status", exitCode: 0 },
+        rawText: "clean",
+        classification: { family: "git-status", confidence: 1, matchedReducer: "git/status" },
+      },
+      storeDir,
+    );
+
+    const page = await listArtifactMetadataPage(storeDir, { limit: 1 });
+
+    expect(page.entries).toHaveLength(1);
+    expect(page.legacySidecarsIncluded).toBe(false);
+    expect(page.partial).toBe(true);
+    expect(page.nextCursor).toBeTruthy();
+    expect(await readFile(legacyPath, "utf8")).toBe(legacyText);
   });
 
   it("tracks metadata-only entries without exposing them as raw artifacts", async () => {
@@ -160,7 +233,11 @@ describe("artifacts", () => {
     expect(metadata).toHaveLength(1);
     expect(metadata[0]?.id).toBe(metadataRef.id);
     expect(metadata[0]?.path).toBeUndefined();
-    expect(metadata[0]?.metadata.command).toBe("pnpm test");
+    expect(metadata[0]?.metadata.command).toBeUndefined();
+    expect(metadata[0]?.metadata.commandFamily).toBe("pnpm");
+    expect(metadata[0]?.metadata.commandDigest).toBeUndefined();
+    expect(metadata[0]?.metadataFormat).toBe("jsonl-segment");
+    expect(metadata[0]?.metadataRecordId).toBe(metadataRef.id);
     expect(metadata[0]?.metadata.source).toBe("cli");
   });
 

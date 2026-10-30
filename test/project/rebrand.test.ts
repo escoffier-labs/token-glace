@@ -55,7 +55,7 @@ describe("Token Glace branding", () => {
     const ci = await readFile(".github/workflows/ci.yml", "utf8");
 
     expect(packageJson.packageManager).toBe("pnpm@10.34.5");
-    expect(ci).toContain("pnpm/action-setup@v6.0.10");
+    expect(ci).toContain("pnpm/action-setup@v6.1.0");
     expect(ci).not.toMatch(/^\s+version:\s+/m);
   });
 });

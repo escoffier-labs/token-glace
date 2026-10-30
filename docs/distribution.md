@@ -39,6 +39,17 @@ pnpm release:checksums
 pnpm release:formula
 ```
 
+normal formula generation verifies that the selected checksum entry matches the
+actual local tarball before writing Ruby. For formula-only recovery against an
+existing published tarball, first verify its published checksum, then run:
+
+```bash
+pnpm release:formula -- --published-tarball-sha256 <64-lowercase-hex> --release-version <published-version>
+```
+
+the recovery override is intentionally offline and does not require or rebuild a
+local tarball.
+
 that writes:
 
 - `release/tokenjuice-v<version>.tar.gz`
@@ -60,18 +71,19 @@ npx tokenjuice --help
 
 the release pipeline generates a formula file that targets the GitHub release tarball.
 
-expected shape:
+the release workflow attaches `token-glace.rb` and `sha256sums.txt` to the
+GitHub release. The formula installs both the `token-glace` and legacy
+`tokenjuice` commands.
 
-```bash
-brew tap vincentkoc/tap
-brew install tokenjuice
-```
+this fork does not publish a Homebrew tap by default. To sync one:
 
-the release flow now mirrors `autosecure`:
-
-- GitHub release uploads `sha256sums.txt`
-- the tap sync workflow updates `vincentkoc/tap`
+- set the `HOMEBREW_TAP_GITHUB_TOKEN` secret and the
+  `HOMEBREW_TAP_REPOSITORY` variable
+- manually dispatch `.github/workflows/homebrew-tap.yml` with the published tag;
+  without both settings the workflow fails
 - the tap formula points at the GitHub release tarball
+
+the release workflow no longer dispatches the tap sync itself.
 
 ## apt / dnf / yum
 

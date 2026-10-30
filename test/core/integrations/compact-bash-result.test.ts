@@ -1,5 +1,10 @@
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 
+import { listArtifactMetadata } from "../../../src/core/artifacts.js";
 import { compactBashResult } from "../../../src/core/integrations/compact-bash-result.js";
 
 type CompactBashResultOutcome = Awaited<ReturnType<typeof compactBashResult>>;
@@ -57,6 +62,89 @@ describe("compactBashResult", () => {
     expect(rewritten.rawText).toContain("src/hosts/pi/index.ts");
     expect(rewritten.result.inlineText).toContain("M: src/hosts/pi/index.ts");
     expect(rewritten.result.inlineText).not.toContain("truncated output");
+  });
+
+  it.each([
+    "rtk git status",
+    "/usr/local/bin/rtk git status",
+    "cd /repo && env DEBUG=1 rtk git status",
+    "rtk git status | tee output.txt",
+    "bash -lc 'rtk git status'",
+    "env DEBUG=1 bash -lc 'rtk git status'",
+    "cd /repo && bash -lc 'rtk git status'",
+    "timeout 30 rtk git status",
+    "timeout -- 30 rtk git status",
+    "nice -n 10 rtk rg foo",
+    "time -p rtk git status",
+    "nohup rtk git status",
+    "command rtk git status",
+    "command -p -- rtk git status",
+    "command rtk -v",
+    "uv run rtk git status",
+    "uv run --no-sync rtk git status",
+    "uv run --with pytest-cov --python 3.12 rtk git status",
+    "uv run --python=3.12 -- rtk git status",
+  ])("keeps configured commands raw: %s", async (command) => {
+    const outcome = await compactBashResult({
+      source: "pi",
+      command,
+      visibleText: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
+      skipCommandNames: ["rtk"],
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    expect(outcome).toMatchObject({
+      action: "keep",
+      reason: "configured-command",
+    });
+  });
+
+  it.each([
+    "RTK git status",
+    "rtk.exe git status",
+    "/usr/local/bin/RTK.exe git status",
+    "cd /repo && env DEBUG=1 RTK git status",
+  ])("matches configured commands case-insensitively and with executable suffixes: %s", async (command) => {
+    const outcome = await compactBashResult({
+      source: "pi",
+      command,
+      visibleText: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
+      skipCommandNames: ["rtk"],
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    expect(outcome).toMatchObject({
+      action: "keep",
+      reason: "configured-command",
+    });
+  });
+
+  it.each([
+    "rtk-helper git status",
+    "echo rtk",
+    "timeout 30 cat rtk",
+    "nice -n 10 grep x rtk",
+    "command -v rtk",
+    "command -V rtk",
+    "uv run --with rtk pytest",
+    "uv run --all-extras --no-extra rtk python -V",
+    "uv run -w rtk -i https://example.com/simple pytest",
+  ])("does not match non-command arguments: %s", async (command) => {
+    const outcome = await compactBashResult({
+      source: "pi",
+      command,
+      visibleText: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
+      skipCommandNames: ["rtk"],
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    expect(outcome).not.toMatchObject({ reason: "configured-command" });
   });
 
   it("skips repository inspection commands before compaction when requested", async () => {
@@ -171,16 +259,17 @@ describe("compactBashResult", () => {
     });
   });
 
-  it("allows large document-shaped file inspections through the summary reducer", async () => {
+  it("keeps large document-shaped file inspections raw", async () => {
+    const visibleText = [
+      "# Review",
+      "intro",
+      "## Evidence",
+      ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+    ].join("\n");
     const outcome = await compactBashResult({
       source: "pi",
       command: "sed -n '1,260p' notes.txt",
-      visibleText: [
-        "# Review",
-        "intro",
-        "## Evidence",
-        ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
-      ].join("\n"),
+      visibleText,
       inspectionPolicy: "allow-safe-inventory",
       minSavedCharsAny: 8,
       genericFallbackMinSavedChars: 120,
@@ -189,13 +278,13 @@ describe("compactBashResult", () => {
     });
 
     expect(outcome).toMatchObject({
-      action: "rewrite",
-      result: {
-        classification: {
-          matchedReducer: "generic/large-document-summary",
-        },
-      },
+      action: "keep",
+      reason: "file-content-inspection-command",
     });
+    const kept = expectKeep(outcome);
+    expect(kept.rawText).toContain("# Review");
+    expect(kept.rawText).toContain("paragraph 0");
+    expect(kept.rawText).toBe(visibleText);
   });
 
   it("keeps tree output raw under the safe-inventory inspection policy", async () => {
@@ -263,6 +352,29 @@ describe("compactBashResult", () => {
     const kept = expectKeep(outcome);
     expect(kept.reason).toBe("generic-weak-compaction");
     expect(kept.result?.classification.matchedReducer).toBe("generic/fallback");
+  });
+
+  it("removes repeated emoji banners from Crabbox-like generic output", async () => {
+    const outcome = await compactBashResult({
+      source: "codex",
+      command: "crabbox run inspect-model",
+      visibleText: [
+        "generated modeling_modernbert.py",
+        "🚨".repeat(1_935),
+        "inspection complete",
+      ].join("\n"),
+      maxInlineChars: 1_200,
+      minSavedCharsAny: 8,
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    const rewritten = expectRewrite(outcome);
+    expect(rewritten.result.classification.matchedReducer).toBe("generic/fallback");
+    expect(rewritten.result.inlineText).toContain("[repeated emoji banner omitted: U+1F6A8 x1935]");
+    expect(rewritten.result.inlineText).not.toContain("🚨");
+    expect(rewritten.result.compaction?.kinds).toContain("repeated-emoji-banner-omission");
   });
 
   it("compacts generic/fallback output when the command is only a cd-prefixed chain", async () => {
@@ -358,6 +470,217 @@ describe("compactBashResult", () => {
     expect(rewritten.result.inlineText).toContain("M: src/file-29.ts");
     expect(rewritten.result.inlineText).not.toContain("omitted");
     expect(rewritten.result.compaction?.authoritative).toBe(false);
+  });
+
+  it("allows a host-specific policy to override the no-omit environment", async () => {
+    process.env.TOKENJUICE_NO_OMISSION = "1";
+
+    const outcome = await compactBashResult({
+      source: "codex",
+      command: "git log --oneline",
+      visibleText: Array.from(
+        { length: 40 },
+        (_, index) => `${(index + 1).toString(16).padStart(7, "a")} feat: commit ${index}`,
+      ).join("\n"),
+      allowOmit: true,
+      minSavedCharsAny: 8,
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    const rewritten = expectRewrite(outcome);
+    expect(rewritten.result.inlineText).toContain("omitted");
+    expect(rewritten.result.compaction?.authoritative).toBe(true);
+  });
+
+  it("keeps explicit no-omit enabled when both input policies are set", async () => {
+    const outcome = await compactBashResult({
+      source: "codex",
+      command: "git status",
+      visibleText: [
+        "On branch main",
+        "Changes not staged for commit:",
+        ...Array.from({ length: 30 }, (_, index) => `  modified:   src/file-${index}.ts`),
+      ].join("\n"),
+      noOmit: true,
+      allowOmit: true,
+      maxInlineChars: 20_000,
+      minSavedCharsAny: 8,
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    const rewritten = expectRewrite(outcome);
+    expect(rewritten.result.inlineText).toContain("M: src/file-29.ts");
+    expect(rewritten.result.inlineText).not.toContain("omitted");
+  });
+
+  it("stores raw bytes in storeDir only after a rewrite", async () => {
+    const storeDir = await mkdtemp(join(tmpdir(), "tokenjuice-store-raw-"));
+    const stray = new Set<string>();
+    const rawText = [
+      "On branch feat/pi-extension",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/hosts/pi/extension/runtime.ts",
+      "\tmodified:   src/hosts/pi/index.ts",
+      "",
+      "no changes added to commit",
+    ].join("\n");
+    const noteStray = (outcome: CompactBashResultOutcome) => {
+      const ref = outcome.result?.rawRef;
+      if (!ref?.path || ref.path.startsWith(storeDir)) {
+        return;
+      }
+      stray.add(ref.path);
+      if (ref.metadataPath) {
+        stray.add(ref.metadataPath);
+      }
+    };
+    try {
+      const outcome = await compactBashResult({
+        source: "pi",
+        command: "git status",
+        visibleText: rawText,
+        storeRaw: true,
+        storeDir,
+        maxInlineChars: 1200,
+        inspectionPolicy: "allow-safe-inventory",
+        minSavedCharsAny: 8,
+        genericFallbackMinSavedChars: 120,
+        genericFallbackMaxRatio: 0.75,
+        skipGenericFallbackForCompoundCommands: true,
+      });
+      noteStray(outcome);
+
+      const rewritten = expectRewrite(outcome);
+      expect(rewritten.result.rawRef?.id).toMatch(/^tj_[0-9a-f-]{12}$/i);
+      const id = rewritten.result.rawRef?.id ?? "";
+      const rawPath = join(storeDir, `${id}.txt`);
+      expect(rewritten.result.rawRef?.path).toBe(rawPath);
+      expect(await readFile(rawPath, "utf8")).toBe(rawText);
+
+      const namesBeforeKeep = (await readdir(storeDir)).sort();
+      const statsIdsBeforeKeep = (await listArtifactMetadata(storeDir)).map((entry) => entry.id).sort();
+      const keptOutcome = await compactBashResult({
+        source: "pi",
+        command: "cd /repo && echo hi | head -c 4",
+        visibleText: Array.from({ length: 18 }, (_, index) => `line ${index + 1} ${"x".repeat(24)}`).join("\n"),
+        storeRaw: true,
+        storeDir,
+        minSavedCharsAny: 8,
+        genericFallbackMinSavedChars: 120,
+        genericFallbackMaxRatio: 0.75,
+        skipGenericFallbackForCompoundCommands: true,
+      });
+      noteStray(keptOutcome);
+      const kept = expectKeep(keptOutcome);
+      expect(kept.reason).toBe("generic-compound-command");
+      expect(kept.result?.rawRef).toBeUndefined();
+      const namesAfterKeep = (await readdir(storeDir)).sort();
+      expect(namesAfterKeep).toEqual(namesBeforeKeep);
+      // storeRaw keep: no raw stored, and no stats entry for this call.
+      expect({
+        statsIds: (await listArtifactMetadata(storeDir)).map((entry) => entry.id).sort(),
+        rawTxt: namesAfterKeep.filter((name) => name.endsWith(".txt")),
+      }).toEqual({
+        statsIds: statsIdsBeforeKeep,
+        rawTxt: namesBeforeKeep.filter((name) => name.endsWith(".txt")),
+      });
+    } finally {
+      await Promise.all([...stray].map((path) => rm(path, { force: true })));
+      await rm(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores nothing for a storeRaw caller when the output is kept", async () => {
+    const storeDir = await mkdtemp(join(tmpdir(), "tokenjuice-store-raw-keep-"));
+    const policy = {
+      storeRaw: true,
+      storeDir,
+      inspectionPolicy: "allow-safe-inventory",
+      minSavedCharsAny: 8,
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    } as const;
+    try {
+      const exactRead = await compactBashResult({
+        ...policy,
+        source: "pi",
+        command: "sed -n '1,260p' notes.txt",
+        visibleText: [
+          "# Review",
+          "## Evidence",
+          ...Array.from({ length: 260 }, (_, index) => `paragraph ${index} ${"x".repeat(40)}`),
+        ].join("\n"),
+      });
+      expect(expectKeep(exactRead).reason).toBe("file-content-inspection-command");
+
+      const lowSavings = await compactBashResult({
+        ...policy,
+        source: "pi",
+        command: "git status",
+        visibleText: ["On branch main", "", "nothing to commit, working tree clean"].join("\n"),
+        minSavedCharsAny: 10_000,
+      });
+      expect(expectKeep(lowSavings).reason).toMatch(/^(no-compaction|low-savings-compaction)$/u);
+
+      const weakGeneric = await compactBashResult({
+        ...policy,
+        source: "pi",
+        command: "custom-tool --emit-lines",
+        visibleText: Array.from({ length: 18 }, (_, index) => `line ${index + 1} ${"x".repeat(24)}`).join("\n"),
+      });
+      expect(expectKeep(weakGeneric).reason).toBe("generic-weak-compaction");
+
+      expect(await readdir(storeDir)).toEqual([]);
+      expect(await listArtifactMetadata(storeDir)).toEqual([]);
+    } finally {
+      await rm(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the stats policy for storeRaw rewrites and callers without storeRaw", async () => {
+    const storeDir = await mkdtemp(join(tmpdir(), "tokenjuice-store-raw-stats-"));
+    const rawText = [
+      "On branch main",
+      "Changes not staged for commit:",
+      ...Array.from({ length: 30 }, (_, index) => `  modified:   src/file-${index}.ts`),
+      "",
+      "no changes added to commit",
+    ].join("\n");
+    const policy = {
+      command: "git status",
+      visibleText: rawText,
+      storeDir,
+      minSavedCharsAny: 8,
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    } as const;
+    try {
+      const silentStore = expectRewrite(await compactBashResult({ ...policy, source: "pi", storeRaw: true, recordStats: false }));
+      const silentId = silentStore.result.rawRef?.id ?? "";
+      expect(silentId).toMatch(/^tj_[0-9a-f-]{12}$/iu);
+      expect(await readFile(join(storeDir, `${silentId}.txt`), "utf8")).toBe(rawText);
+      expect(await listArtifactMetadata(storeDir)).toEqual([]);
+
+      const countedStore = expectRewrite(await compactBashResult({ ...policy, source: "pi", storeRaw: true, recordStats: true }));
+      const countedId = countedStore.result.rawRef?.id ?? "";
+      expect((await listArtifactMetadata(storeDir)).map((entry) => entry.id)).toEqual([countedId]);
+
+      const metadataOnly = expectRewrite(await compactBashResult({ ...policy, source: "codex", recordStats: true }));
+      expect(metadataOnly.result.rawRef).toBeUndefined();
+      const ids = (await listArtifactMetadata(storeDir)).map((entry) => entry.id).sort();
+      expect(ids).toHaveLength(2);
+      expect(ids).toContain(countedId);
+      expect((await readdir(storeDir)).filter((name) => name.endsWith(".txt")).sort()).toEqual([`${countedId}.txt`, `${silentId}.txt`].sort());
+    } finally {
+      await rm(storeDir, { recursive: true, force: true });
+    }
   });
 
 });

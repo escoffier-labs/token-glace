@@ -20,14 +20,11 @@ function assert(condition, message) {
   }
 }
 
-function compactableOutput(prefix, count) {
-  return Array.from({ length: count }, (_, index) => `${prefix}/example-${index + 1}.json`).join("\n");
-}
-
-function postToolUsePayload(command, toolResponse) {
+function postToolUsePayload(command, toolResponse, exitCode = 0) {
   return `${JSON.stringify({
     hook_event_name: "PostToolUse",
     tool_name: "Bash",
+    exit_code: exitCode,
     tool_input: { command },
     tool_response: toolResponse,
   })}\n`;
@@ -126,13 +123,35 @@ async function runCodexE2E() {
   });
   const report = JSON.parse(doctor.stdout);
   assert(report.status === "ok", `expected Codex doctor status ok, got ${doctor.stdout}`);
+  assert(report.detectedCommands?.length === 1, `expected one Codex hook command, got ${doctor.stdout}`);
+  assert(report.detectedCommands[0]?.runtimePath === process.execPath, `expected pinned Codex Node runtime, got ${doctor.stdout}`);
+  assert(report.duplicateHookCount === 0, `expected no duplicate Codex hooks, got ${doctor.stdout}`);
+  assert(report.missingPaths?.length === 0, `expected no missing Codex hook paths, got ${doctor.stdout}`);
+  assert(report.nonExecutablePaths?.length === 0, `expected executable Codex hook paths, got ${doctor.stdout}`);
+  assert(report.runtimeMismatches?.length === 0, `expected current Codex Node runtime, got ${doctor.stdout}`);
+  assert(report.packageVersionMismatches?.length === 0, `expected current Codex package version, got ${doctor.stdout}`);
+  const hookEnv = {
+    CODEX_HOME: codexHome,
+    // Keep the authoritative-vs-normalized assertions independent of a developer's shell env.
+    TOKENJUICE_NO_OMISSION: "",
+  };
 
   const payload = postToolUsePayload(
-    "find src/rules -maxdepth 2 -type f | head -n 40",
-    compactableOutput("src/rules", 40),
+    "git status",
+    [
+      "On branch pr-65478-security-fix",
+      "Your branch and 'origin/pr-65478-security-fix' have diverged,",
+      "and have 8 and 642 different commits each, respectively.",
+      "",
+      "Changes not staged for commit:",
+      "\tmodified:   src/agents/pi-embedded-runner/run/attempt.prompt-helpers.ts",
+      "\tmodified:   src/agents/pi-embedded-runner/run/attempt.test.ts",
+      "",
+      "no changes added to commit",
+    ].join("\n"),
   );
   const hook = await run(process.execPath, [distCliPath, "codex-post-tool-use"], {
-    env: { CODEX_HOME: codexHome },
+    env: hookEnv,
     input: payload,
   });
 
@@ -141,15 +160,79 @@ async function runCodexE2E() {
   const additionalContext = output.hookSpecificOutput?.additionalContext;
   assert(output.hookSpecificOutput?.hookEventName === "PostToolUse", "expected Codex PostToolUse output");
   assert(typeof additionalContext === "string", "expected Codex additionalContext");
-  assert(additionalContext.includes("40 matches"), "expected Codex hook output to contain compacted match count");
-  assert(additionalContext.includes("src/rules/example-1.json"), "expected Codex hook output to include compacted paths");
-  assert(additionalContext.includes("tokenjuice wrap --raw -- <command>"), "expected Codex hook output to include raw rerun hint");
+  const observationPrefix = "<tokenjuice_compacted_tool_observation>\n";
+  const observationSuffix = "\n</tokenjuice_compacted_tool_observation>";
+  assert(additionalContext.startsWith(observationPrefix), "expected delimited Codex observation");
+  assert(additionalContext.endsWith(observationSuffix), "expected closed Codex observation");
+  const observation = JSON.parse(additionalContext.slice(observationPrefix.length, -observationSuffix.length));
+  assert(observation.source === "codex-post-tool-use", "expected factual Codex observation source");
+  assert(observation.exitCode === 0, "expected factual Codex observation exit code");
+  assert(observation.authority === "non-authoritative-rewrite", "expected non-authoritative rewrite label");
+  assert(observation.compactedOutput.includes("Changes not staged:"), "expected Codex hook output to retain status context");
+  assert(
+    observation.compactedOutput.includes("M: src/agents/pi-embedded-runner/run/attempt.prompt-helpers.ts"),
+    "expected Codex hook output to include compacted status paths",
+  );
+  assert(!observation.compactedOutput.includes("and have 8 and 642"), "expected Codex hook output to omit noisy branch details");
+  assert(
+    observation.recoveryReference === undefined,
+    "expected non-authoritative Codex rewrites to omit recovery references",
+  );
   assert(!hook.stdout.includes("\"decision\""), "Codex hook feedback must not emit JSON decision:block output");
+
+  const authoritativeHook = await run(process.execPath, [distCliPath, "codex-post-tool-use"], {
+    env: hookEnv,
+    input: postToolUsePayload(
+      "git log --oneline",
+      Array.from(
+        { length: 40 },
+        (_, index) => `${(index + 1).toString(16).padStart(7, "a")} feat: commit ${index}`,
+      ).join("\n"),
+    ),
+  });
+  const authoritativeOutput = JSON.parse(authoritativeHook.stdout);
+  const authoritativeContext = authoritativeOutput.hookSpecificOutput?.additionalContext;
+  assert(typeof authoritativeContext === "string", "expected authoritative Codex context");
+  const authoritativeObservation = JSON.parse(
+    authoritativeContext.slice(observationPrefix.length, -observationSuffix.length),
+  );
+  assert(
+    authoritativeObservation.authority === "authoritative-omission",
+    "expected authoritative Codex omission label",
+  );
+  // Recovery references name a stored raw artifact (`tokenjuice cat <id>`); this fixture stores none.
+  assert(
+    authoritativeObservation.recoveryReference === undefined,
+    "expected authoritative Codex omissions without a raw artifact to omit recovery references",
+  );
+
+  // Exercise the packaged CLI at both fail-open thresholds: compaction itself
+  // is optional above 1 MiB, while stdin is drained above 16 MiB so Tokenjuice
+  // exits cleanly instead of failing on oversized hook input.
+  const oversizedResponse = await run(process.execPath, [distCliPath, "codex-post-tool-use"], {
+    env: { CODEX_HOME: codexHome },
+    input: postToolUsePayload("bin/rails test", "x".repeat(1024 * 1024 + 1)),
+  });
+  assert(oversizedResponse.code === 0, `expected oversized Codex hook exit 0, got ${oversizedResponse.code}`);
+  assert(oversizedResponse.stdout === "", "expected oversized Codex hook stdout to stay empty");
+  assert(oversizedResponse.stderr === "", `expected oversized Codex hook stderr to stay empty, got ${oversizedResponse.stderr}`);
+
+  const overInputLimit = await run(process.execPath, [distCliPath, "codex-post-tool-use"], {
+    env: { CODEX_HOME: codexHome },
+    input: postToolUsePayload("bin/rails test", "x".repeat(16 * 1024 * 1024)),
+  });
+  assert(overInputLimit.code === 0, `expected over-limit Codex hook exit 0, got ${overInputLimit.code}`);
+  assert(overInputLimit.stdout === "", "expected over-limit Codex hook stdout to stay empty");
+  assert(overInputLimit.stderr === "", `expected over-limit Codex hook stderr to stay empty, got ${overInputLimit.stderr}`);
 
   return {
     version: version.stdout.trim(),
     doctor: report.status,
-    exitCode: hook.code,
+    exitCodes: {
+      compacted: hook.code,
+      oversizedResponse: oversizedResponse.code,
+      overInputLimit: overInputLimit.code,
+    },
   };
 }
 
