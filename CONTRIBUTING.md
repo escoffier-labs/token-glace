@@ -24,7 +24,10 @@ Most of tokenjuice (the reducer engine, the host integration matrix, the CLI sur
 
 - Personal details, hostnames, real private IPs, account ids, or live auth profiles in code, rules, docs, or tests. Use `192.0.2.x` (RFC 5737) for example IPs.
 - Commands or hooks that call out to the network without explicit opt-in.
-- AI co-authorship trailers on commits (`Co-Authored-By: <model>`). Conventional commits only.
+
+## Commits
+
+Use Conventional Commits. When an AI coding tool did substantial work on a commit in this repository, credit it with a `Co-Authored-By` trailer that uses the tool's own noreply address, for example `Co-Authored-By: Claude <noreply@anthropic.com>`, `Co-Authored-By: Codex <codex@openai.com>`, or `Co-Authored-By: Cursor <cursoragent@cursor.com>`. Leave these trailers off any commit offered upstream to [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice).
 
 ## Local dev
 
