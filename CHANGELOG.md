@@ -11,6 +11,8 @@
 - OpenCode: register compaction through both loaders. V1 (1.18.29+) calls `server()` for the `tool.execute.after` hook map, and V2 calls `setup(ctx)`, which now registers `ctx.tool.hook("execute.after", ...)` for completed `shell` results. Upstream's `{ id, setup }` export registered nothing on either version.
 - Codex: classify `describe` and `desc` as schema output only inside a SQL client, so `kubectl describe`, `aws ... describe-*`, and `git describe` output is compacted again.
 - Name the host and settings path when Claude Code, CodeBuddy, or Droid settings contain malformed JSON.
+- Pi: parse `uv run` options such as `--no-sync`, `--with <pkg>`, `--python=3.12`, and `--` before matching `--skip-command` names, so `uv run --no-sync pytest` honors `--skip-command pytest`.
+- Align the local host E2E check with the Codex hook contract: a recovery reference appears only when a raw artifact was stored.
 - Require `--release-version` with `--published-tarball-sha256` so recovered Homebrew formulas pair the checksum with the matching release URL, and fail the manual tap sync when its token or repository is not configured.
 - Pin `.nvmrc` to Node 22.12.0, the minimum in `engines`.
 

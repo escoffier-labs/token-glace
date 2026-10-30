@@ -77,13 +77,38 @@ export function getOutputAwareInspectionSkipReason(
 
 const SIMPLE_COMMAND_WRAPPERS = new Set(["nohup", "builtin", "exec", "noglob", "nocorrect"]);
 
+// `uv run` options that take a separate value argument.
+const UV_RUN_VALUE_OPTIONS = new Set([
+  "--with", "--with-editable", "--with-requirements", "--python", "-p", "--project", "--directory",
+  "--package", "--extra", "--group", "--only-group", "--no-group", "--env-file", "--index",
+  "--default-index", "--index-url", "--extra-index-url", "--find-links", "-f", "--config-file",
+  "--cache-dir", "--refresh-package", "--reinstall-package", "--upgrade-package", "-P",
+  "--prerelease", "--resolution", "--exclude-newer", "--link-mode", "--keyring-provider",
+  "--allow-insecure-host", "--color", "--python-platform",
+]);
+
+function getUvRunCommandArgv(argv: string[]): string[] {
+  let index = 2;
+  while (index < argv.length) {
+    const arg = argv[index] ?? "";
+    if (arg === "--") {
+      return argv.slice(index + 1);
+    }
+    if (!arg.startsWith("-") || arg === "-") {
+      break;
+    }
+    index += !arg.includes("=") && UV_RUN_VALUE_OPTIONS.has(arg) ? 2 : 1;
+  }
+  return argv.slice(index);
+}
+
 function getWrappedCommandArgv(argv: string[]): string[] | null {
   const wrapper = getCommandName(argv);
   if (wrapper && SIMPLE_COMMAND_WRAPPERS.has(wrapper)) {
     return argv.slice(1);
   }
   if (wrapper === "uv" && argv[1] === "run") {
-    return argv.slice(2);
+    return getUvRunCommandArgv(argv);
   }
   if (wrapper === "command") {
     let commandIndex = 1;

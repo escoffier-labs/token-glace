@@ -200,9 +200,10 @@ async function runCodexE2E() {
     authoritativeObservation.authority === "authoritative-omission",
     "expected authoritative Codex omission label",
   );
+  // Recovery references name a stored raw artifact (`tokenjuice cat <id>`); this fixture stores none.
   assert(
-    authoritativeObservation.recoveryReference === "tokenjuice wrap --raw -- <command>",
-    "expected authoritative Codex omissions to retain a factual recovery reference",
+    authoritativeObservation.recoveryReference === undefined,
+    "expected authoritative Codex omissions without a raw artifact to omit recovery references",
   );
 
   // Exercise the packaged CLI at both fail-open thresholds: compaction itself

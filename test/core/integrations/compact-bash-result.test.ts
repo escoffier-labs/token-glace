@@ -80,6 +80,10 @@ describe("compactBashResult", () => {
     "command rtk git status",
     "command -p -- rtk git status",
     "command rtk -v",
+    "uv run rtk git status",
+    "uv run --no-sync rtk git status",
+    "uv run --with pytest-cov --python 3.12 rtk git status",
+    "uv run --python=3.12 -- rtk git status",
   ])("keeps configured commands raw: %s", async (command) => {
     const outcome = await compactBashResult({
       source: "pi",
@@ -126,6 +130,7 @@ describe("compactBashResult", () => {
     "nice -n 10 grep x rtk",
     "command -v rtk",
     "command -V rtk",
+    "uv run --with rtk pytest",
   ])("does not match non-command arguments: %s", async (command) => {
     const outcome = await compactBashResult({
       source: "pi",
