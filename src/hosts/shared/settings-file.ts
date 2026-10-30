@@ -83,6 +83,18 @@ export async function readSettingsFile(path: string): Promise<SettingsFile> {
   return file;
 }
 
+/** Parses JSON settings data, naming the host and file when the JSON is malformed. Returns undefined when the file is absent. */
+export function parseSettingsJson(file: SettingsFile, hostLabel: string): unknown {
+  if (!file.data) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(file.data.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`failed to read ${hostLabel} settings from ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 type StagedFile = { directory: string; path: string };
 
 async function stageFile(parent: string, data: Buffer, metadata?: Stats): Promise<StagedFile> {

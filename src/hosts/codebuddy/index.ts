@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { extractHookCommandPaths } from "../shared/hook-command.js";
-import { readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
+import { parseSettingsJson, readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
 import {
   buildWrapLauncherHookCommand,
   buildWrappedCommand,
@@ -264,7 +264,7 @@ export async function installCodeBuddyHook(
   }
 
   const settings = await readSettingsFile(settingsPath);
-  const config = sanitizeCodeBuddySettings(settings.data ? JSON.parse(settings.data.toString("utf8")) as unknown : undefined);
+  const config = sanitizeCodeBuddySettings(parseSettingsJson(settings, "codebuddy"));
   const command = await buildCodeBuddyHookCommand(options);
 
   // Drop any legacy PostToolUse tokenjuice entries left behind by a prior
@@ -300,7 +300,7 @@ export async function uninstallCodeBuddyHook(
   if (!settings.data) {
     return { settingsPath, removed: false };
   }
-  const config = sanitizeCodeBuddySettings(JSON.parse(settings.data.toString("utf8")) as unknown);
+  const config = sanitizeCodeBuddySettings(parseSettingsJson(settings, "codebuddy"));
   const removedPreToolUse = removeTokenjuiceHookEvent(config, "PreToolUse");
   const removedPostToolUse = removeTokenjuiceHookEvent(config, "PostToolUse");
   const removed = removedPreToolUse || removedPostToolUse;

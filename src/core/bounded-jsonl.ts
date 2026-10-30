@@ -1,4 +1,4 @@
-import { appendFile, lstat, mkdir, open, opendir, readFile, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, opendir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ const MAX_SHARD_COUNT = 100;
 const MAX_STORE_FILES = 10_000;
 const MAX_SEGMENT_BYTES = 64 * 1024 * 1024;
 const DIRECTORY_ENTRY_SLACK = 256;
+const STALE_LOCK_MIN_AGE_MS = 30_000;
 
 
 async function closeDirectoryHandle(directoryHandle: { close?: () => void | Promise<void> }): Promise<void> {
@@ -120,12 +121,66 @@ function parseSegmentDay(name: string, prefix: string): string | undefined {
     .exec(name)?.[1];
 }
 
-async function tryCreateLock(lockPath: string): Promise<string | undefined> {
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists under another user.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
+ * Reclaims a lock only when its recorded owner process is gone and the lock is old.
+ * Age alone cannot prove ownership, so ownerless or unreadable locks stay in place.
+ */
+async function tryReclaimDeadOwnerLock(lockPath: string): Promise<boolean> {
+  let details;
+  let owner: string;
+  try {
+    details = await stat(lockPath);
+    owner = await readFile(join(lockPath, "owner"), "utf8");
+  } catch {
+    return false;
+  }
+  if (!details.isDirectory() || Date.now() - details.mtimeMs < STALE_LOCK_MIN_AGE_MS) {
+    return false;
+  }
+  const pid = Number(owner.split(":", 1)[0]);
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || isProcessAlive(pid)) {
+    return false;
+  }
+
+  // Move the lock aside first so only one reclaimer wins, then confirm it is the lock that was inspected.
+  const tombstone = `${lockPath}.stale-${randomUUID()}`;
+  try {
+    await rename(lockPath, tombstone);
+  } catch {
+    return false;
+  }
+  try {
+    const moved = await stat(tombstone);
+    if (moved.ino !== details.ino || moved.dev !== details.dev) {
+      await rename(tombstone, lockPath).catch(() => undefined);
+      return false;
+    }
+    await rm(tombstone, { recursive: true, force: true });
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+async function tryCreateLock(lockPath: string, reclaimDeadOwner = true): Promise<string | undefined> {
   try {
     await mkdir(lockPath, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      // Age alone cannot prove ownership; reclaiming here can displace a live or replacement writer.
+      // A hook killed by a host timeout can leave its lock behind; reclaim it once if its owner is gone.
+      if (reclaimDeadOwner && await tryReclaimDeadOwnerLock(lockPath)) {
+        return await tryCreateLock(lockPath, false);
+      }
       return undefined;
     }
     throw error;

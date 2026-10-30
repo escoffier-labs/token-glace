@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { compactBashResult } from "../../core/integrations/compact-bash-result.js";
 import { buildTokenjuiceHookCommand } from "../shared/host-command.js";
 import { extractHookCommandPaths } from "../shared/hook-command.js";
-import { readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
+import { parseSettingsJson, readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
 import {
   buildWrapLauncherHookCommand,
   buildWrappedCommand,
@@ -294,7 +294,7 @@ export async function installClaudeCodeHook(
   options: ClaudeCodeHookCommandOptions = {},
 ): Promise<InstallClaudeCodeHookResult> {
   const settings = await readSettingsFile(settingsPath);
-  const config = sanitizeClaudeCodeSettings(settings.data ? JSON.parse(settings.data.toString("utf8")) as unknown : undefined);
+  const config = sanitizeClaudeCodeSettings(parseSettingsJson(settings, "claude code"));
   const mode = options.mode ?? "post-tool-use";
   const command = await buildClaudeCodeHookCommand(options);
 
@@ -330,7 +330,7 @@ export async function uninstallClaudeCodeHook(
   if (!settings.data) {
     return { settingsPath, removed: false };
   }
-  const config = sanitizeClaudeCodeSettings(JSON.parse(settings.data.toString("utf8")) as unknown);
+  const config = sanitizeClaudeCodeSettings(parseSettingsJson(settings, "claude code"));
   const removedPreToolUse = removeTokenjuiceHookEvent(config, "PreToolUse");
   const removedPostToolUse = removeTokenjuiceHookEvent(config, "PostToolUse");
   const removed = removedPreToolUse || removedPostToolUse;

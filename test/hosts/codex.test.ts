@@ -2042,6 +2042,7 @@ describe("runCodexPostToolUseHook", () => {
       "CREATE TABLE t (first TEXT, middle TEXT CHECK (length(middle) > 2), last TEXT);\n",
     ],
     ["schema-output", "psql app -c '\\d+'", "Table \"public.accounts\"\n Column | Type | Nullable\n"],
+    ["schema-output", "mysql app -e 'DESCRIBE accounts'", "Field\tType\tNull\nid\tint\tNO\n"],
   ])("keeps %s out of lossy additional context", async (reason, command, toolResponse) => {
     const home = await createTempDir();
     process.env.CODEX_HOME = home;
@@ -2059,6 +2060,28 @@ describe("runCodexPostToolUseHook", () => {
 
     expect(stdout).toBe("");
     expect(debug.skipped).toBe(reason);
+  });
+
+  it.each([
+    "kubectl describe pod web-0",
+    "aws ec2 describe-instances --region us-east-1",
+    "git describe --tags",
+  ])("does not treat %s as schema output", async (command) => {
+    const home = await createTempDir();
+    process.env.CODEX_HOME = home;
+    const payload = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command },
+      tool_response: "Name: web-0\nStatus: Running\n",
+    });
+
+    await captureStdio(() => runCodexPostToolUseHook(payload));
+    const debug = JSON.parse(await readFile(join(home, "tokenjuice-hook.last.json"), "utf8")) as {
+      skipped?: string;
+    };
+
+    expect(debug.skipped).not.toBe("schema-output");
   });
 
   it("stores critical evidence unchanged when raw retention is enabled", async () => {

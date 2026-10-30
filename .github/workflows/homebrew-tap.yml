@@ -35,9 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${TAP_TOKEN}" ] || [ -z "${TAP_REPOSITORY}" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping Homebrew tap sync: HOMEBREW_TAP_GITHUB_TOKEN or HOMEBREW_TAP_REPOSITORY is not configured."
-            exit 0
+            echo "::error::Homebrew tap sync needs both the HOMEBREW_TAP_GITHUB_TOKEN secret and the HOMEBREW_TAP_REPOSITORY variable."
+            exit 1
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
 

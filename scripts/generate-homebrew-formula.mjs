@@ -10,6 +10,7 @@ const releaseRoot = join(repoRoot, "release");
 function parseArgs(argv) {
   let output;
   let publishedTarballSha256;
+  let releaseVersion;
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
     if (current === "--") {
@@ -25,9 +26,23 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (current === "--release-version") {
+      releaseVersion = requireFlagValue(argv, index, current);
+      index += 1;
+      continue;
+    }
     throw new Error(`unknown flag: ${current}`);
   }
-  return { output, publishedTarballSha256 };
+  if (releaseVersion !== undefined && publishedTarballSha256 === undefined) {
+    throw new Error("--release-version requires --published-tarball-sha256");
+  }
+  if (publishedTarballSha256 !== undefined && releaseVersion === undefined) {
+    throw new Error("--published-tarball-sha256 requires --release-version <version> naming the published release");
+  }
+  if (releaseVersion !== undefined && !/^\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$/.test(releaseVersion)) {
+    throw new Error("--release-version must be a version such as 1.2.3, without a leading v");
+  }
+  return { output, publishedTarballSha256, releaseVersion };
 }
 
 function requireFlagValue(argv, index, flag) {
@@ -129,7 +144,8 @@ end
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
-  const version = packageJson.version;
+  // Formula-only recovery names the published release explicitly so its checksum and URL stay paired.
+  const version = args.releaseVersion ?? packageJson.version;
   if (typeof version !== "string" || version.length === 0) {
     throw new Error("package.json version is required");
   }

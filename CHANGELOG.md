@@ -6,6 +6,15 @@
 
 - Make Claude Code's non-mutating PostToolUse hook the default while retaining explicit PreToolUse command wrapping behind `--pre-tool-use`.
 
+### Fixes
+
+- OpenCode: register compaction through both loaders. V1 (1.18.29+) calls `server()` for the `tool.execute.after` hook map, and V2 calls `setup(ctx)`, which now registers `ctx.tool.hook("execute.after", ...)` for completed `shell` results. Upstream's `{ id, setup }` export registered nothing on either version.
+- Reclaim bounded JSONL locks whose recorded owner process has exited and that are at least 30 seconds old, so a hook killed while holding a stats or telemetry lock no longer disables appends until the lock directory is deleted by hand. Ownerless locks still stay in place.
+- Codex: classify `describe` and `desc` as schema output only inside a SQL client, so `kubectl describe`, `aws ... describe-*`, and `git describe` output is compacted again.
+- Name the host and settings path when Claude Code, CodeBuddy, or Droid settings contain malformed JSON.
+- Require `--release-version` with `--published-tarball-sha256` so recovered Homebrew formulas pair the checksum with the matching release URL, and fail the manual tap sync when its token or repository is not configured.
+- Pin `.nvmrc` to Node 22.12.0, the minimum in `engines`.
+
 ### Upstream sync
 
 Merge [vincentkoc/tokenjuice](https://github.com/vincentkoc/tokenjuice) v0.8.2 through v0.8.5 plus unreleased `main` (through `89f0b25`). Upstream PR numbers below refer to that repository. Claude Code keeps this fork's PostToolUse default; upstream's PreToolUse-only install and its no-op PostToolUse shim are not taken.

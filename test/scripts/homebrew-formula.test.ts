@@ -81,10 +81,30 @@ describe("Homebrew formula release flow", () => {
       "--",
       "--published-tarball-sha256",
       publishedSha256,
+      "--release-version",
+      "0.8.2",
       "--output",
       outputPath,
     ]);
-    await expect(readFile(outputPath, "utf8")).resolves.toContain(`sha256 "${publishedSha256}"`);
+    const written = await readFile(outputPath, "utf8");
+    expect(written).toContain(`sha256 "${publishedSha256}"`);
+    expect(written).toContain("/releases/download/v0.8.2/token-glace-v0.8.2.tar.gz");
+    expect(written).toContain('assert_equal "0.8.2"');
+  });
+
+  it("requires an explicit release version for published checksum recovery", async () => {
+    const dir = await makeTempDir();
+    await expect(
+      execFileAsync(process.execPath, [
+        generatorScript,
+        "--published-tarball-sha256",
+        "a".repeat(64),
+        "--output",
+        join(dir, "token-glace.rb"),
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("--published-tarball-sha256 requires --release-version"),
+    });
   });
 
   it("rejects invalid published checksum overrides", async () => {
@@ -94,6 +114,8 @@ describe("Homebrew formula release flow", () => {
         generatorScript,
         "--published-tarball-sha256",
         "A".repeat(64),
+        "--release-version",
+        "0.8.2",
         "--output",
         join(dir, "token-glace.rb"),
       ]),

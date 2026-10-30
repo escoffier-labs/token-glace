@@ -44,7 +44,7 @@ actual local tarball before writing Ruby. For formula-only recovery against an
 existing published tarball, first verify its published checksum, then run:
 
 ```bash
-pnpm release:formula -- --published-tarball-sha256 <64-lowercase-hex>
+pnpm release:formula -- --published-tarball-sha256 <64-lowercase-hex> --release-version <published-version>
 ```
 
 the recovery override is intentionally offline and does not require or rebuild a
@@ -80,7 +80,7 @@ this fork does not publish a Homebrew tap by default. To sync one:
 - set the `HOMEBREW_TAP_GITHUB_TOKEN` secret and the
   `HOMEBREW_TAP_REPOSITORY` variable
 - manually dispatch `.github/workflows/homebrew-tap.yml` with the published tag;
-  without both settings the workflow skips
+  without both settings the workflow fails
 - the tap formula points at the GitHub release tarball
 
 the release workflow no longer dispatches the tap sync itself.

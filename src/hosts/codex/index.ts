@@ -1031,7 +1031,9 @@ function getCriticalCodexEvidenceReason(
   }
   if (
     /(?:^|\s)['"]?(?:\.schema|\\d[+a-z]*)['"]?(?:\s|$)/iu.test(command)
-    || /\b(?:schema-only|show\s+create|describe|pragma)\b/iu.test(command)
+    || /\b(?:schema-only|show\s+create|pragma)\b/iu.test(command)
+    // `describe` is SQL schema output only inside a SQL client; kubectl, aws, and git use it for noisy output.
+    || /\b(?:sqlite3|psql|mysql|mariadb|duckdb)\b.*\b(?:describe|desc)\b/iu.test(command)
   ) {
     return "schema-output";
   }

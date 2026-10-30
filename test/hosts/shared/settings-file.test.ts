@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { readSettingsFile, writeSettingsFile } from "../../../src/hosts/shared/settings-file.js";
+import { parseSettingsJson, readSettingsFile, writeSettingsFile } from "../../../src/hosts/shared/settings-file.js";
+import { installClaudeCodeHook } from "../../../src/hosts/claude-code/index.js";
 
 const directories: string[] = [];
 
@@ -107,5 +108,25 @@ describe("settings snapshots", () => {
     expect((await lstat(`${settingsPath}.bak`)).isSymbolicLink()).toBe(false);
     expect(await readFile(unrelated, "utf8")).toBe("keep");
     expect(await readFile(`${settingsPath}.bak.1`, "utf8")).toBe("{}\n");
+  });
+});
+
+describe("settings JSON parsing", () => {
+  it("returns undefined for absent settings and parsed JSON otherwise", async () => {
+    const directory = await fixture();
+    const settingsPath = join(directory, "settings.json");
+    expect(parseSettingsJson(await readSettingsFile(settingsPath), "example")).toBeUndefined();
+    await writeFile(settingsPath, '{"hooks":{}}\n');
+    expect(parseSettingsJson(await readSettingsFile(settingsPath), "example")).toEqual({ hooks: {} });
+  });
+
+  it("names the host and settings path when JSON is malformed", async () => {
+    const directory = await fixture();
+    const settingsPath = join(directory, "settings.json");
+    await writeFile(settingsPath, "{not json");
+    await expect(installClaudeCodeHook(settingsPath, { local: true })).rejects.toThrow(
+      `failed to read claude code settings from ${settingsPath}:`,
+    );
+    expect(await readFile(settingsPath, "utf8")).toBe("{not json");
   });
 });

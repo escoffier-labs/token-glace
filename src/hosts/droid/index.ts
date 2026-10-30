@@ -13,7 +13,7 @@ import { buildHookCommandDoctorFields } from "../shared/hook-command-doctor.js";
 import { isTokenjuiceExecutablePath, parseShellWords } from "../shared/hook-command.js";
 import { buildCompactedOutputContext, writeEmptyHookJsonLine, writeHookJsonLine } from "../shared/hook-output.js";
 import { isRecord } from "../shared/hooks-json-file.js";
-import { readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
+import { parseSettingsJson, readSettingsFile, writeSettingsFile } from "../shared/settings-file.js";
 
 export type DroidHookCommandOptions = TokenjuiceHookCommandOptions;
 
@@ -159,7 +159,7 @@ export async function installDroidHook(
   options: DroidHookCommandOptions = {},
 ): Promise<InstallDroidHookResult> {
   const settings = await readSettingsFile(settingsPath);
-  const config = sanitizeFactorySettings(settings.data ? JSON.parse(settings.data.toString("utf8")) as unknown : undefined);
+  const config = sanitizeFactorySettings(parseSettingsJson(settings, "factory droid"));
   const command = await buildTokenjuiceHookCommand(TOKENJUICE_DROID_SUBCOMMAND, "droid", options);
   removeTokenjuiceDroidHooks(config);
   const postToolUse = getPostToolUseGroups(config);
@@ -179,7 +179,7 @@ export async function uninstallDroidHook(
   if (!settings.data) {
     return { settingsPath, removed: 0 };
   }
-  const config = sanitizeFactorySettings(JSON.parse(settings.data.toString("utf8")) as unknown);
+  const config = sanitizeFactorySettings(parseSettingsJson(settings, "factory droid"));
   const removed = removeTokenjuiceDroidHooks(config);
   if (removed > 0) {
     await writeSettingsFile(settings, `${JSON.stringify(config, null, 2)}\n`);

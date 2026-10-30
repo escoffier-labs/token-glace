@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -84,6 +85,60 @@ describe("bounded JSONL segments", () => {
       shardCount: 1,
     })).resolves.toBeUndefined();
     expect((await stat(lockPath)).isDirectory()).toBe(true);
+  });
+
+  async function createOwnedLock(lockPath: string, pid: number, ageMs: number): Promise<void> {
+    await mkdir(lockPath);
+    await writeFile(join(lockPath, "owner"), `${pid}:test-owner`, "utf8");
+    const at = new Date(Date.now() - ageMs);
+    await utimes(lockPath, at, at);
+  }
+
+  function exitedPid(): number {
+    const child = spawnSync(process.execPath, ["-e", ""]);
+    expect(child.pid).toBeGreaterThan(0);
+    return child.pid!;
+  }
+
+  it("reclaims an old admission lock whose owner process has exited", async () => {
+    const dir = await createTempDir();
+    await mkdir(dir, { recursive: true });
+    const admissionLockPath = join(dir, ".events.admission.lock");
+    await createOwnedLock(admissionLockPath, exitedPid(), 60_000);
+
+    const path = await appendBoundedJsonl(dir, "events", "event-1", { id: "event-1" }, { shardCount: 1 });
+
+    expect(path).toBeDefined();
+    expect(await readFile(path!, "utf8")).toBe('{"id":"event-1"}\n');
+    expect((await readdir(dir)).filter((name) => name.includes(".lock"))).toEqual([]);
+  });
+
+  it("reclaims an old segment lock whose owner process has exited", async () => {
+    const dir = await createTempDir();
+    const path = await appendBoundedJsonl(dir, "events", "event-1", { id: "event-1" }, { shardCount: 1 });
+    await createOwnedLock(`${path}.lock`, exitedPid(), 60_000);
+
+    await expect(appendBoundedJsonl(dir, "events", "event-1", { id: "event-2" }, { shardCount: 1 }))
+      .resolves.toBe(path);
+    expect(await readFile(path!, "utf8")).toBe('{"id":"event-1"}\n{"id":"event-2"}\n');
+  });
+
+  it("keeps old locks held by a live process and recent locks from an exited one", async () => {
+    const dir = await createTempDir();
+    const path = await appendBoundedJsonl(dir, "events", "event-1", { id: "event-1" }, { shardCount: 1 });
+    const lockPath = `${path}.lock`;
+
+    await createOwnedLock(lockPath, process.ppid, 60_000);
+    await expect(appendBoundedJsonl(dir, "events", "event-1", { id: "event-2" }, { shardCount: 1 }))
+      .resolves.toBeUndefined();
+    expect(await readFile(join(lockPath, "owner"), "utf8")).toBe(`${process.ppid}:test-owner`);
+
+    await rm(lockPath, { recursive: true });
+    const pid = exitedPid();
+    await createOwnedLock(lockPath, pid, 0);
+    await expect(appendBoundedJsonl(dir, "events", "event-1", { id: "event-3" }, { shardCount: 1 }))
+      .resolves.toBeUndefined();
+    expect(await readFile(join(lockPath, "owner"), "utf8")).toBe(`${pid}:test-owner`);
   });
 
   it("keeps every event whose concurrent append was accepted", async () => {
