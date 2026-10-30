@@ -25,5 +25,5 @@ Closes #
 - [ ] Added or updated tests / fixtures covering the change
 - [ ] Updated the `Unreleased` section of `CHANGELOG.md` for any user-visible effect
 - [ ] No personal details, hostnames, real private IPs, account names, tokens, or unredacted absolute paths in code, rules, docs, tests, or this PR (use 192.0.2.x for example IPs)
-- [ ] Conventional commit messages, no AI co-authorship trailers
+- [ ] Conventional commit messages; AI co-author trailers only as described in CONTRIBUTING.md
 - [ ] Considered whether this change should also be offered upstream (vincentkoc/tokenjuice)
