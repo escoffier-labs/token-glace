@@ -1,6 +1,6 @@
-import { appendFile, lstat, mkdir, open, opendir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, opendir, readFile, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const LOCK_RETRIES = 8;
@@ -10,8 +10,6 @@ const MAX_SHARD_COUNT = 100;
 const MAX_STORE_FILES = 10_000;
 const MAX_SEGMENT_BYTES = 64 * 1024 * 1024;
 const DIRECTORY_ENTRY_SLACK = 256;
-const STALE_LOCK_MIN_AGE_MS = 30_000;
-const RECLAIM_CLAIM_RETENTION_MS = 10 * 60 * 1_000;
 
 
 async function closeDirectoryHandle(directoryHandle: { close?: () => void | Promise<void> }): Promise<void> {
@@ -122,102 +120,12 @@ function parseSegmentDay(name: string, prefix: string): string | undefined {
     .exec(name)?.[1];
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the process exists under another user.
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
-function reclaimClaimPrefix(lockPath: string): string {
-  return `${lockPath}.reclaim-`;
-}
-
-async function pruneOldReclaimClaims(lockPath: string): Promise<void> {
-  const directory = dirname(lockPath);
-  const prefix = basename(reclaimClaimPrefix(lockPath));
-  let names: string[];
-  try {
-    names = await readdir(directory);
-  } catch {
-    return;
-  }
-  for (const name of names) {
-    if (!name.startsWith(prefix)) {
-      continue;
-    }
-    const claimPath = join(directory, name);
-    try {
-      if (Date.now() - (await stat(claimPath)).mtimeMs >= RECLAIM_CLAIM_RETENTION_MS) {
-        await rmdir(claimPath);
-      }
-    } catch {
-      // Another reclaimer may have pruned it already.
-    }
-  }
-}
-
-/**
- * Reclaims a lock only when its recorded owner process is gone and the lock is old.
- * Age alone cannot prove ownership, so ownerless or unreadable locks stay in place.
- *
- * Every lock incarnation has a unique owner token. A reclaimer first claims that
- * incarnation with an exclusive `mkdir`, so two reclaimers holding the same stale
- * view cannot both move the lock, and a reclaimer whose view went stale cannot
- * move a replacement: only the claim holder can remove the inspected incarnation.
- * Claims stay behind for a while so late reclaimers still lose, then get pruned.
- */
-async function tryReclaimDeadOwnerLock(lockPath: string): Promise<boolean> {
-  let details;
-  let owner: string;
-  try {
-    details = await stat(lockPath);
-    owner = await readFile(join(lockPath, "owner"), "utf8");
-  } catch {
-    return false;
-  }
-  if (!details.isDirectory() || Date.now() - details.mtimeMs < STALE_LOCK_MIN_AGE_MS) {
-    return false;
-  }
-  const pid = Number(owner.split(":", 1)[0]);
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || isProcessAlive(pid)) {
-    return false;
-  }
-
-  const claimPath = `${reclaimClaimPrefix(lockPath)}${createHash("sha256").update(owner).digest("hex").slice(0, 16)}`;
-  try {
-    await mkdir(claimPath, { mode: 0o700 });
-  } catch {
-    return false;
-  }
-
-  const tombstone = `${lockPath}.stale-${randomUUID()}`;
-  try {
-    await rename(lockPath, tombstone);
-  } catch {
-    return false;
-  }
-  try {
-    await rm(tombstone, { recursive: true, force: true });
-  } catch {
-    // The lock path is already free; a leftover tombstone does not block writers.
-  }
-  await pruneOldReclaimClaims(lockPath);
-  return true;
-}
-
-async function tryCreateLock(lockPath: string, reclaimDeadOwner = true): Promise<string | undefined> {
+async function tryCreateLock(lockPath: string): Promise<string | undefined> {
   try {
     await mkdir(lockPath, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      // A hook killed by a host timeout can leave its lock behind; reclaim it once if its owner is gone.
-      if (reclaimDeadOwner && await tryReclaimDeadOwnerLock(lockPath)) {
-        return await tryCreateLock(lockPath, false);
-      }
+      // Age alone cannot prove ownership; reclaiming here can displace a live or replacement writer.
       return undefined;
     }
     throw error;

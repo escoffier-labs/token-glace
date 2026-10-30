@@ -9,7 +9,6 @@
 ### Fixes
 
 - OpenCode: register compaction through both loaders. V1 (1.18.29+) calls `server()` for the `tool.execute.after` hook map, and V2 calls `setup(ctx)`, which now registers `ctx.tool.hook("execute.after", ...)` for completed `shell` results. Upstream's `{ id, setup }` export registered nothing on either version.
-- Reclaim bounded JSONL locks whose recorded owner process has exited and that are at least 30 seconds old, so a hook killed while holding a stats or telemetry lock no longer disables appends until the lock directory is deleted by hand. Each dead lock is claimed once with an exclusive `mkdir` before it is moved, so concurrent reclaimers cannot displace a live replacement. Ownerless locks still stay in place.
 - Codex: classify `describe` and `desc` as schema output only inside a SQL client, so `kubectl describe`, `aws ... describe-*`, and `git describe` output is compacted again.
 - Name the host and settings path when Claude Code, CodeBuddy, or Droid settings contain malformed JSON.
 - Require `--release-version` with `--published-tarball-sha256` so recovered Homebrew formulas pair the checksum with the matching release URL, and fail the manual tap sync when its token or repository is not configured.
