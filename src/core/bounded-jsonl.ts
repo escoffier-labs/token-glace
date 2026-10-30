@@ -1,6 +1,6 @@
-import { appendFile, lstat, mkdir, open, opendir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, opendir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const LOCK_RETRIES = 8;
@@ -11,6 +11,7 @@ const MAX_STORE_FILES = 10_000;
 const MAX_SEGMENT_BYTES = 64 * 1024 * 1024;
 const DIRECTORY_ENTRY_SLACK = 256;
 const STALE_LOCK_MIN_AGE_MS = 30_000;
+const RECLAIM_CLAIM_RETENTION_MS = 10 * 60 * 1_000;
 
 
 async function closeDirectoryHandle(directoryHandle: { close?: () => void | Promise<void> }): Promise<void> {
@@ -131,9 +132,43 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function reclaimClaimPrefix(lockPath: string): string {
+  return `${lockPath}.reclaim-`;
+}
+
+async function pruneOldReclaimClaims(lockPath: string): Promise<void> {
+  const directory = dirname(lockPath);
+  const prefix = basename(reclaimClaimPrefix(lockPath));
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) {
+      continue;
+    }
+    const claimPath = join(directory, name);
+    try {
+      if (Date.now() - (await stat(claimPath)).mtimeMs >= RECLAIM_CLAIM_RETENTION_MS) {
+        await rmdir(claimPath);
+      }
+    } catch {
+      // Another reclaimer may have pruned it already.
+    }
+  }
+}
+
 /**
  * Reclaims a lock only when its recorded owner process is gone and the lock is old.
  * Age alone cannot prove ownership, so ownerless or unreadable locks stay in place.
+ *
+ * Every lock incarnation has a unique owner token. A reclaimer first claims that
+ * incarnation with an exclusive `mkdir`, so two reclaimers holding the same stale
+ * view cannot both move the lock, and a reclaimer whose view went stale cannot
+ * move a replacement: only the claim holder can remove the inspected incarnation.
+ * Claims stay behind for a while so late reclaimers still lose, then get pruned.
  */
 async function tryReclaimDeadOwnerLock(lockPath: string): Promise<boolean> {
   let details;
@@ -152,7 +187,13 @@ async function tryReclaimDeadOwnerLock(lockPath: string): Promise<boolean> {
     return false;
   }
 
-  // Move the lock aside first so only one reclaimer wins, then confirm it is the lock that was inspected.
+  const claimPath = `${reclaimClaimPrefix(lockPath)}${createHash("sha256").update(owner).digest("hex").slice(0, 16)}`;
+  try {
+    await mkdir(claimPath, { mode: 0o700 });
+  } catch {
+    return false;
+  }
+
   const tombstone = `${lockPath}.stale-${randomUUID()}`;
   try {
     await rename(lockPath, tombstone);
@@ -160,15 +201,11 @@ async function tryReclaimDeadOwnerLock(lockPath: string): Promise<boolean> {
     return false;
   }
   try {
-    const moved = await stat(tombstone);
-    if (moved.ino !== details.ino || moved.dev !== details.dev) {
-      await rename(tombstone, lockPath).catch(() => undefined);
-      return false;
-    }
     await rm(tombstone, { recursive: true, force: true });
   } catch {
-    return false;
+    // The lock path is already free; a leftover tombstone does not block writers.
   }
+  await pruneOldReclaimClaims(lockPath);
   return true;
 }
 

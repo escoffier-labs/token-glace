@@ -12,6 +12,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      const hook = (globalThis as { __boundedJsonlBeforeRename?: (to: string) => Promise<void> }).__boundedJsonlBeforeRename;
+      if (hook) {
+        await hook(String(args[1]));
+      }
+      return await actual.rename(...args);
+    },
     open: async (...args: Parameters<typeof actual.open>) => {
       if (String(args[0]).endsWith("raced-events-2026-09-08-00.jsonl") && args[1] === "r") {
         throw Object.assign(new Error("raced segment was pruned"), { code: "ENOENT" });
@@ -110,7 +117,53 @@ describe("bounded JSONL segments", () => {
 
     expect(path).toBeDefined();
     expect(await readFile(path!, "utf8")).toBe('{"id":"event-1"}\n');
-    expect((await readdir(dir)).filter((name) => name.includes(".lock"))).toEqual([]);
+    const leftovers = (await readdir(dir)).filter((name) => name.includes(".lock"));
+    expect(leftovers).toHaveLength(1);
+    expect(leftovers[0]).toMatch(/^\.events\.admission\.lock\.reclaim-[0-9a-f]{16}$/u);
+  });
+
+  it("lets only one of two concurrent reclaimers move a dead lock", async () => {
+    const dir = await createTempDir();
+    await mkdir(dir, { recursive: true });
+    const admissionLockPath = join(dir, ".events.admission.lock");
+    await createOwnedLock(admissionLockPath, exitedPid(), 60_000);
+
+    const tombstoneRenames: string[] = [];
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstArrived!: () => void;
+    const firstAtRename = new Promise<void>((resolve) => {
+      firstArrived = resolve;
+    });
+    const globals = globalThis as { __boundedJsonlBeforeRename?: (to: string) => Promise<void> };
+    globals.__boundedJsonlBeforeRename = async (to) => {
+      if (!to.includes(".stale-")) {
+        return;
+      }
+      tombstoneRenames.push(to);
+      if (tombstoneRenames.length === 1) {
+        firstArrived();
+        await firstHeld;
+      }
+    };
+
+    try {
+      const first = appendBoundedJsonl(dir, "events", "event-1", { id: "event-1" }, { shardCount: 1 });
+      await firstAtRename;
+      // The second writer sees the same dead lock while the first reclaimer is mid-reclaim.
+      const second = await appendBoundedJsonl(dir, "events", "event-2", { id: "event-2" }, { shardCount: 1 });
+      expect(second).toBeUndefined();
+      releaseFirst();
+      const path = await first;
+      expect(path).toBeDefined();
+      expect(tombstoneRenames).toHaveLength(1);
+      expect(await readFile(path!, "utf8")).toBe('{"id":"event-1"}\n');
+    } finally {
+      delete globals.__boundedJsonlBeforeRename;
+      releaseFirst();
+    }
   });
 
   it("reclaims an old segment lock whose owner process has exited", async () => {
