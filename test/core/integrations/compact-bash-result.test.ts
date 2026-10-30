@@ -131,6 +131,8 @@ describe("compactBashResult", () => {
     "command -v rtk",
     "command -V rtk",
     "uv run --with rtk pytest",
+    "uv run --all-extras --no-extra rtk python -V",
+    "uv run -w rtk -i https://example.com/simple pytest",
   ])("does not match non-command arguments: %s", async (command) => {
     const outcome = await compactBashResult({
       source: "pi",

@@ -77,14 +77,17 @@ export function getOutputAwareInspectionSkipReason(
 
 const SIMPLE_COMMAND_WRAPPERS = new Set(["nohup", "builtin", "exec", "noglob", "nocorrect"]);
 
-// `uv run` options that take a separate value argument.
+// `uv run` options that take a separate value argument (from `uv run --help`, uv 0.13.6).
 const UV_RUN_VALUE_OPTIONS = new Set([
-  "--with", "--with-editable", "--with-requirements", "--python", "-p", "--project", "--directory",
-  "--package", "--extra", "--group", "--only-group", "--no-group", "--env-file", "--index",
-  "--default-index", "--index-url", "--extra-index-url", "--find-links", "-f", "--config-file",
-  "--cache-dir", "--refresh-package", "--reinstall-package", "--upgrade-package", "-P",
-  "--prerelease", "--resolution", "--exclude-newer", "--link-mode", "--keyring-provider",
-  "--allow-insecure-host", "--color", "--python-platform",
+  "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--no-editable-package", "--env-file",
+  "-w", "--with", "--with-editable", "--with-requirements", "--package", "--python-platform", "--index",
+  "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--index-strategy",
+  "--keyring-provider", "-P", "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease",
+  "--prerelease-package", "--fork-strategy", "--exclude-newer", "--exclude-newer-package",
+  "--no-sources-package", "--reinstall-package", "--link-mode", "-C", "--config-setting",
+  "--config-settings-package", "--no-build-isolation-package", "--no-build-package", "--no-binary-package",
+  "--cache-dir", "--refresh-package", "-p", "--python", "--color", "--allow-insecure-host", "--directory",
+  "--project", "--config-file",
 ]);
 
 function getUvRunCommandArgv(argv: string[]): string[] {
